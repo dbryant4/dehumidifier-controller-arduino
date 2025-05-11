@@ -13,6 +13,12 @@
 #include <Update.h>
 #include <EEPROM.h>
 
+// Add after the includes and before the configuration flags
+#define VERSION_MAJOR 1
+#define VERSION_MINOR 0
+#define VERSION_PATCH 0
+#define VERSION_BUILD __DATE__ " " __TIME__
+
 // Configuration flags
 #define ENABLE_HOME_ASSISTANT false  // Set to true to enable Home Assistant integration
 
@@ -236,6 +242,7 @@ void setupOTA() {
   ArduinoOTA.onStart([]() {
     String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
     Serial.println("Start updating " + type);
+    Serial.println("Current version: " + getVersionString());
     
     // Clear display and show update message
     tft.fillScreen(ST77XX_BLACK);
@@ -245,6 +252,8 @@ void setupOTA() {
     tft.println("Updating...");
     tft.setCursor(10, 70);
     tft.println("Please wait");
+    tft.setCursor(10, 90);
+    tft.println("v" + getVersionString());
   });
   
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
@@ -377,6 +386,8 @@ void publishMQTTState() {
 void setup() {
   Serial.begin(115200);
   Serial.println("\n=== Dehumidifier Controller Starting ===");
+  Serial.println("Version: " + getVersionString());
+  Serial.println("Build: " + String(VERSION_BUILD));
   
   // Initialize EEPROM
   EEPROM.begin(EEPROM_SIZE);
@@ -958,6 +969,8 @@ void handleRoot() {
   html += ".wifi-status{text-align:center;margin-top:15px;font-size:14px;color:#666}";
   html += ".refresh-button{background:#3498db;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;font-size:14px;transition:background 0.3s;margin-top:10px}";
   html += ".refresh-button:hover{background:#2980b9}";
+  html += ".cooldown-timer{color:#e67e22;font-size:14px;margin-top:5px}";
+  html += ".version-info{text-align:center;margin-top:10px;font-size:12px;color:#666}";
   html += "</style></head><body>";
   html += "<div class=\"container\">";
   html += "<h1>Dehumidifier Controller</h1>";
@@ -971,7 +984,14 @@ void handleRoot() {
   html += "<div class=\"status-item\">";
   html += "<div class=\"status-label\">Status</div>";
   html += "<div class=\"status-value " + String(compressorInCooldown ? "cooldown" : (dehumidifierRunning ? "running" : "standby")) + "\">";
-  html += String(compressorInCooldown ? "Cooldown" : (dehumidifierRunning ? "Running" : "Standby")) + "</div></div></div>";
+  html += String(compressorInCooldown ? "Cooldown" : (dehumidifierRunning ? "Running" : "Standby")) + "</div>";
+  if (compressorInCooldown) {
+    unsigned long remaining = getCooldownRemaining() / 1000;  // Convert to seconds
+    int minutes = remaining / 60;
+    int seconds = remaining % 60;
+    html += "<div class=\"cooldown-timer\">" + String(minutes) + "m " + String(seconds) + "s remaining</div>";
+  }
+  html += "</div></div>";
   html += "<div class=\"control-panel\">";
   html += "<form action=\"/setHumidity\" method=\"post\">";
   html += "<div class=\"humidity-control\">";
@@ -983,6 +1003,10 @@ void handleRoot() {
   html += "<button type=\"button\" onclick=\"window.location.reload()\" class=\"refresh-button\">Refresh</button>";
   html += "</div>";
   html += "<div class=\"wifi-status\">IP: " + WiFi.localIP().toString() + "</div>";
+  html += "<div class=\"version-info\">";
+  html += "Version " + getVersionString() + "<br>";
+  html += "Build: " + String(VERSION_BUILD);
+  html += "</div>";
   html += "</div></body></html>";
   
   server.send(200, "text/html", html);
@@ -995,11 +1019,14 @@ void handleData() {
   }
   
   String json = "{";
+  json += "\"version\":\"" + getVersionString() + "\",";
+  json += "\"build\":\"" + String(VERSION_BUILD) + "\",";
   json += "\"temperature\":" + String(currentTemperature) + ",";
   json += "\"humidity\":" + String(currentHumidity) + ",";
   json += "\"targetHumidity\":" + String(targetHumidity) + ",";
   json += "\"running\":" + String(dehumidifierRunning) + ",";
   json += "\"cooldown\":" + String(compressorInCooldown) + ",";
+  json += "\"cooldownRemaining\":" + String(getCooldownRemaining() / 1000) + ",";
   json += "\"drainFull\":" + String(floatSwitchTriggered);
   json += "}";
   server.send(200, "application/json", json);
@@ -1115,4 +1142,18 @@ void checkUpdateTimeout() {
     tft.println("Timeout!");
     delay(2000);
   }
+}
+
+// Add this function after the other helper functions
+unsigned long getCooldownRemaining() {
+  if (!compressorInCooldown) return 0;
+  unsigned long currentMillis = millis();
+  unsigned long elapsed = currentMillis - lastCompressorOff;
+  if (elapsed >= COMPRESSOR_MIN_OFF_TIME) return 0;
+  return COMPRESSOR_MIN_OFF_TIME - elapsed;
+}
+
+// Add this helper function after the other helper functions
+String getVersionString() {
+  return String(VERSION_MAJOR) + "." + String(VERSION_MINOR) + "." + String(VERSION_PATCH);
 } 
