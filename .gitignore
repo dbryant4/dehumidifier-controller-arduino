@@ -1,0 +1,70 @@
+# Arduino build output
+*.hex
+*.bin
+*.elf
+*.eep
+*.lss
+*.map
+*.sym
+
+# Arduino IDE build folder
+build/
+
+# Arduino IDE temporary files
+*.ino.bak
+*.ino.hex
+*.ino.eep
+*.ino.bin
+*.ino.elf
+*.ino.lss
+*.ino.map
+*.ino.sym
+
+# Arduino IDE settings
+.vscode/
+.idea/
+*.code-workspace
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows system files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux system files
+*~
+.directory
+.Trash-*
+
+# Build directories
+build/
+Debug/
+Release/
+
+# Dependencies
+.pio/
+.vscode/
+.vs/
+.idea/
+
+# Logs
+*.log
+logs/
+log/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Backup files
+*.bak
+*~
+*.swp
+*.swo 
