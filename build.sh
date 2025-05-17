@@ -8,12 +8,12 @@ NC='\033[0m' # No Color
 
 # Configuration
 SKETCH_NAME="dehumidifier-controller-arduino"
-BOARD="esp32:esp32:esp32s3"
+BOARD="esp32:esp32:adafruit_feather_esp32s2_tft"  # Updated to match working script
 PORT="/dev/tty.usbserial-*"  # Adjust this based on your system
 BUILD_DIR="build"
 BIN_FILE="${SKETCH_NAME}.ino.bin"
 
-echo -e "${YELLOW}Building ${SKETCH_NAME} for ESP32-S3...${NC}"
+echo -e "${YELLOW}Building ${SKETCH_NAME} for ESP32-S2...${NC}"
 
 # Check if arduino-cli is installed
 if ! command -v arduino-cli &> /dev/null; then
@@ -29,14 +29,19 @@ mkdir -p ${BUILD_DIR}
 # Update core and libraries
 echo -e "${YELLOW}Updating Arduino core and libraries...${NC}"
 arduino-cli core update-index
-arduino-cli core install ${BOARD}
+arduino-cli core install esp32:esp32
 arduino-cli lib update-index
+
+# Install libraries with proper commands
+echo -e "${YELLOW}Installing required libraries...${NC}"
 arduino-cli lib install "Adafruit GFX Library"
-arduino-cli lib install "Adafruit ST7789"
-arduino-cli lib install "Adafruit SHT4x"
-arduino-cli lib install "Adafruit SHTC3"
+arduino-cli lib install "Adafruit ST7735 and ST7789 Library"
+arduino-cli config set library.enable_unsafe_install true
+arduino-cli lib install "Adafruit Unified Sensor"
+arduino-cli lib install --git-url https://github.com/adafruit/Adafruit_SHT4x.git
+arduino-cli lib install --git-url https://github.com/adafruit/Adafruit_SHTC3.git
 arduino-cli lib install "Adafruit NeoPixel"
-arduino-cli lib install "PubSubClient"  # Add MQTT library
+arduino-cli lib install "PubSubClient"
 
 # Compile the sketch
 echo -e "${YELLOW}Compiling sketch...${NC}"

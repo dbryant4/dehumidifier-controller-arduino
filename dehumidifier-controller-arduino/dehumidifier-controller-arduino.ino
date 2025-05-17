@@ -20,7 +20,7 @@
 #define VERSION_BUILD __DATE__ " " __TIME__
 
 // Configuration flags
-#define ENABLE_HOME_ASSISTANT false  // Set to true to enable Home Assistant integration
+#define ENABLE_HOME_ASSISTANT true  // Set to true to enable Home Assistant integration
 
 #if ENABLE_HOME_ASSISTANT
 #include <PubSubClient.h>  // Only include MQTT library if Home Assistant is enabled
@@ -62,10 +62,10 @@ const char* hostname = "dehumidifier-controller";
 
 #if ENABLE_HOME_ASSISTANT
 // MQTT settings
-const char* mqtt_server = "your_mqtt_broker";  // Change this to your MQTT broker address
+const char* mqtt_server = "192.168.1.3";  // Change this to your MQTT broker address
 const int mqtt_port = 1883;
-const char* mqtt_user = "your_mqtt_username";  // Optional
-const char* mqtt_password = "your_mqtt_password";  // Optional
+const char* mqtt_user = "";  // Optional
+const char* mqtt_password = "";  // Optional
 const char* mqtt_client_id = "dehumidifier-controller";
 
 // MQTT topics
@@ -999,7 +999,7 @@ void handleRoot() {
   html += "<input type=\"number\" name=\"humidity\" id=\"humidity\" min=\"30\" max=\"70\" step=\"5\" value=\"" + String(targetHumidity) + "\">";
   html += "<button type=\"submit\">Set</button></div></form></div>";
   html += "<div class=\"links\">";
-  html += "<a href=\"/update.html\">Update Firmware</a>";
+  html += "<a href=\"/update\">Update Firmware</a>";
   html += "<button type=\"button\" onclick=\"window.location.reload()\" class=\"refresh-button\">Refresh</button>";
   html += "</div>";
   html += "<div class=\"wifi-status\">IP: " + WiFi.localIP().toString() + "</div>";
