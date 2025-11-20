@@ -1,68 +1,31 @@
-#include <Adafruit_GFX.h>
-#include <Adafruit_ST7789.h>
-#include <SPI.h>
-#include <Wire.h>
-#include <Adafruit_SHT4x.h>
-#include <Adafruit_SHTC3.h>
+#include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <Adafruit_NeoPixel.h>
-#include <Fonts/FreeSansBold18pt7b.h>
-#include <Fonts/FreeMonoBold9pt7b.h>
+#include <DNSServer.h>
 #include <ArduinoOTA.h>
 #include <Update.h>
 #include <EEPROM.h>
-
-// Add after the includes and before the configuration flags
-#define VERSION_MAJOR 1
-#define VERSION_MINOR 0
-#define VERSION_PATCH 0
-#define VERSION_BUILD __DATE__ " " __TIME__
-
-// Configuration flags
-#define ENABLE_HOME_ASSISTANT true  // Set to true to enable Home Assistant integration
 
 #if ENABLE_HOME_ASSISTANT
 #include <PubSubClient.h>  // Only include MQTT library if Home Assistant is enabled
 #endif
 
-// Pin definitions
-#define TFT_CS        7
-#define TFT_RST       40
-#define TFT_DC        39
-#define TFT_BACKLITE  45  // Backlight pin
-#define TFT_I2C_POWER 21 // Power pin for TFT
-#define BOOT_BUTTON 0  // Use BOOT button (GPIO 0)
-#define DEHUMIDIFIER_RELAY 13
-#define FLOAT_SWITCH 12
-// #define NEOPIXEL_PIN 1  // Built-in NeoPixel pin
-
-// EEPROM settings
-#define EEPROM_SIZE 512
-#define TARGET_HUMIDITY_ADDR 0
-#define LAST_COMPRESSOR_OFF_ADDR 4  // 4 bytes for timestamp
-#define COMPRESSOR_COOLDOWN_FLAG_ADDR 8  // 1 byte for cooldown flag
-
-// Display setup
-Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
-Adafruit_SHT4x sht4 = Adafruit_SHT4x();
-Adafruit_SHTC3 shtc3 = Adafruit_SHTC3();
-Adafruit_NeoPixel pixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
-
-// Sensor type tracking
-bool usingSHT4x = false;
-bool usingSHTC3 = false;
-
-// WiFi credentials
-const char* ssid = "zippy-iot";
-const char* password = "creepy8laburnum*cabaret3RETAIL";
+// Include modular components
+#include "config.h"
+#include "wifi_manager.h"
+#include "sensors.h"
+#include "display.h"
+#include "button.h"
+#include "neopixel.h"
+#include "dehumidifier.h"
+#include "web_templates.h"
 
 // OTA settings
-const char* hostname = "dehumidifier-controller";
+const char* hostname = OTA_HOSTNAME;
 
 #if ENABLE_HOME_ASSISTANT
 // MQTT settings
-const char* mqtt_server = "192.168.1.3";  // Change this to your MQTT broker address
+const char* mqtt_server = "";  // Change this to your MQTT broker address
 const int mqtt_port = 1883;
 const char* mqtt_user = "";  // Optional
 const char* mqtt_password = "";  // Optional
@@ -84,156 +47,42 @@ const unsigned long MQTT_RECONNECT_INTERVAL = 5000;  // Try to reconnect every 5
 bool mqttConnected = false;
 #endif
 
-// Global variables
+// Global variables (shared across modules)
 float targetHumidity = 50.0;  // Default target humidity
-float currentHumidity = 0.0;
-float currentTemperature = 0.0;
-bool dehumidifierRunning = false;
-bool floatSwitchTriggered = false;
 unsigned long lastSensorRead = 0;
-const unsigned long SENSOR_READ_INTERVAL = 2000;  // Read sensors every 2 seconds
 unsigned long lastAnimationUpdate = 0;
-const unsigned long ANIMATION_UPDATE_INTERVAL = 20;  // Reduced from 50ms to 20ms for smoother animations
-bool animationState = false;
-
-// Add these global variables at the top with other globals
-float prevTemperature = -999;
-float prevHumidity = -999;
-float prevTargetHumidity = -999;
-bool prevDehumidifierRunning = false;
-bool prevFloatSwitchTriggered = false;
-bool prevWiFiConnected = false;
-String prevIP = "";
-
-// Add these global variables at the top with other globals
 unsigned long lastWiFiReconnectAttempt = 0;
-const unsigned long WIFI_RECONNECT_INTERVAL = 5000; // Try to reconnect every 5 seconds
+bool isUpdating = false;
+unsigned long updateStartTime = 0;
 
-// Add these global variables at the top with other globals
-unsigned long lastNeoPixelUpdate = 0;
-const unsigned long NEO_PIXEL_UPDATE_INTERVAL = 10;  // Update every 10ms for smoother fade
-int neoPixelBrightness = 0;
-bool neoPixelFadeDirection = true;  // true = fade in, false = fade out
+// Pin configuration (configurable via web UI)
+uint8_t floatSwitchPin = FLOAT_SWITCH;  // Default pin
+uint8_t compressorRelayPin = DEHUMIDIFIER_RELAY;  // Default pin
 
 // Web server
 WebServer server(80);
 
-// Add these global variables at the top with other globals
-unsigned long lastDisplayUpdate = 0;
-const unsigned long DISPLAY_UPDATE_INTERVAL = 5;  // Reduced from 10ms to 5ms for more frequent updates
+// DNS server for captive portal
+DNSServer dnsServer;
+const byte DNS_PORT = 53;
 
-// Add these global variables at the top with other globals
-bool isUpdating = false;
-unsigned long updateStartTime = 0;
-const unsigned long UPDATE_TIMEOUT = 300000; // 5 minutes timeout for updates
+// Extern declarations for variables in modules
+extern bool isAPMode;
+extern bool wifiCredentialsValid;
+extern String wifi_ssid;
+extern String wifi_password;
+extern float currentHumidity;
+extern float currentTemperature;
+extern bool dehumidifierRunning;
+extern bool floatSwitchTriggered;
+extern bool compressorInCooldown;
+extern Adafruit_ST7789 tft;
+extern Adafruit_NeoPixel pixel;
 
-// Add these global variables at the top with other globals
-unsigned long lastButtonPress = 0;
-unsigned long lastButtonRelease = 0;
-bool buttonPressed = false;
-bool buttonHandled = false;
-const unsigned long DEBOUNCE_TIME = 50;  // Debounce time in milliseconds
-const unsigned long LONG_PRESS_TIME = 2000;  // Long press threshold in milliseconds
 
-// Add these global variables at the top with other globals
-unsigned long lastCompressorOff = 0;
-const unsigned long COMPRESSOR_MIN_OFF_TIME = 300000;  // 5 minutes in milliseconds
-bool compressorInCooldown = false;
-
-// Add these global variables at the top with other globals
-unsigned long lastStatusBarUpdate = 0;
-const unsigned long STATUS_BAR_UPDATE_INTERVAL = 1000;  // Update status bar every 1 second
-
-// Add this HTML template at the top of the file after includes
-const char* update_html = R"(
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Dehumidifier Controller - Update Firmware</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body { font-family: Arial; margin: 20px; }
-        .container { max-width: 600px; margin: 0 auto; }
-        .progress { width: 100%; background-color: #f0f0f0; border-radius: 4px; }
-        .progress-bar { height: 20px; background-color: #4CAF50; border-radius: 4px; width: 0%; }
-        .status { margin-top: 20px; padding: 10px; border-radius: 4px; }
-        .success { background-color: #dff0d8; color: #3c763d; }
-        .error { background-color: #f2dede; color: #a94442; }
-        .hidden { display: none; }
-        button { padding: 10px 20px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; }
-        button:disabled { background-color: #cccccc; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Update Firmware</h1>
-        <form id="uploadForm" action="/update" method="post" enctype="multipart/form-data">
-            <input type="file" name="firmware" accept=".bin">
-            <button type="submit" id="uploadButton">Upload Firmware</button>
-        </form>
-        <div id="progress" class="progress hidden">
-            <div id="progressBar" class="progress-bar"></div>
-        </div>
-        <div id="status" class="status hidden"></div>
-        <p><a href="/">Back to Main Page</a></p>
-    </div>
-    <script>
-        document.getElementById('uploadForm').onsubmit = function(e) {
-            e.preventDefault();
-            var formData = new FormData(this);
-            var xhr = new XMLHttpRequest();
-            var progress = document.getElementById('progress');
-            var progressBar = document.getElementById('progressBar');
-            var status = document.getElementById('status');
-            var uploadButton = document.getElementById('uploadButton');
-            
-            progress.classList.remove('hidden');
-            status.classList.remove('hidden');
-            uploadButton.disabled = true;
-            
-            xhr.upload.onprogress = function(e) {
-                if (e.lengthComputable) {
-                    var percentComplete = (e.loaded / e.total) * 100;
-                    progressBar.style.width = percentComplete + '%';
-                }
-            };
-            
-            xhr.onload = function() {
-                if (xhr.status === 200) {
-                    status.textContent = 'Update successful! Device will restart...';
-                    status.className = 'status success';
-                    setTimeout(function() {
-                        window.location.href = '/';
-                    }, 5000);
-                } else {
-                    status.textContent = 'Update failed: ' + xhr.responseText;
-                    status.className = 'status error';
-                    uploadButton.disabled = false;
-                }
-            };
-            
-            xhr.onerror = function() {
-                status.textContent = 'Update failed: Network error';
-                status.className = 'status error';
-                uploadButton.disabled = false;
-            };
-            
-            xhr.open('POST', '/update', true);
-            xhr.send(formData);
-        };
-    </script>
-</body>
-</html>
-)";
-
-// Add this helper function after the global variables
-int getWiFiSignalStrength() {
-  if (WiFi.status() != WL_CONNECTED) return 0;
-  int rssi = WiFi.RSSI();
-  // Convert RSSI to percentage (RSSI typically ranges from -100 to -30)
-  // -30 is excellent signal, -100 is poor signal
-  int percentage = map(rssi, -100, -30, 0, 100);
-  return constrain(percentage, 0, 100);
+// Helper function for version string
+String getVersionString() {
+  return String(VERSION_MAJOR) + "." + String(VERSION_MINOR) + "." + String(VERSION_PATCH);
 }
 
 void setupOTA() {
@@ -410,7 +259,9 @@ void setup() {
   }
   
   // Load saved compressor state
+  extern unsigned long lastCompressorOff;
   lastCompressorOff = EEPROM.readULong(LAST_COMPRESSOR_OFF_ADDR);
+  extern bool compressorInCooldown;
   compressorInCooldown = EEPROM.readBool(COMPRESSOR_COOLDOWN_FLAG_ADDR);
   
   // If we're in cooldown, check if we should still be
@@ -424,90 +275,212 @@ void setup() {
   }
   
   // Initialize NeoPixel
+  extern Adafruit_NeoPixel pixel;
   pixel.begin();
   pixel.setBrightness(50);
   pixel.show();
   
-  // Initialize display
-  pinMode(TFT_BACKLITE, OUTPUT);
-  digitalWrite(TFT_BACKLITE, HIGH);
-
-  pinMode(TFT_I2C_POWER, OUTPUT);
-  digitalWrite(TFT_I2C_POWER, HIGH);
-  delay(10);
+  // Initialize display (includes startup animation)
+  initDisplay();
   
-  tft.init(135, 240);
-  tft.setRotation(3);
-  tft.fillScreen(ST77XX_BLACK);
+  // Show initialization status
+  showStatusMessage("Initializing...", true);
+  delay(500);
   
-  // Initialize button and outputs
+  // Initialize button and outputs (using configured pins)
+  showStatusMessage("Setting up pins...", true);
   pinMode(BOOT_BUTTON, INPUT_PULLUP);
-  pinMode(DEHUMIDIFIER_RELAY, OUTPUT);
-  pinMode(FLOAT_SWITCH, INPUT_PULLUP);
+  pinMode(compressorRelayPin, OUTPUT);
+  pinMode(floatSwitchPin, INPUT_PULLUP);
+  delay(300);
+  
+  // Load pin configuration from EEPROM
+  loadPinConfiguration();
   
   // Initialize sensors
-  if (sht4.begin()) {
-    usingSHT4x = true;
-  } else if (shtc3.begin()) {
-    usingSHTC3 = true;
+  showStatusMessage("Initializing sensors...", true);
+  initSensors();
+  delay(500);
+  
+  // Check if sensors initialized successfully (variables declared in sensors.h)
+  if (!usingSHT4x && !usingSHTC3) {
+    showStatusMessage("No sensor found!", true);
+    delay(2000);
+    showStatusMessage("Continuing anyway...", true);
+    delay(1000);
+  }
+  
+  // Load WiFi credentials from EEPROM
+  showStatusMessage("Loading WiFi config...", true);
+  loadWiFiCredentials();
+  delay(300);
+  
+  // Try to connect to WiFi
+  bool connected = false;
+  if (wifiCredentialsValid) {
+    showStatusMessage("Connecting to WiFi...", true);
+    showProgressBar(0, "Connecting");
+    
+    // Show progress during connection attempt
+    connected = connectToWiFi(wifi_ssid, wifi_password);
+    
+    if (connected) {
+      showProgressBar(100, "Connected!");
+      delay(500);
+      showStatusMessage("WiFi Connected!", true);
+      delay(1000);
+      Serial.print("IP: ");
+      Serial.println(WiFi.localIP());
+    } else {
+      showProgressBar(0, "Connection failed");
+      delay(500);
+    }
   } else {
-    Serial.println("ERROR: No supported sensor found!");
-    while (1) delay(1);
+    showStatusMessage("No WiFi config found", true);
+    delay(1000);
   }
   
-  // Connect to WiFi
-  tft.fillScreen(ST77XX_BLACK);
-  tft.setTextSize(2);
-  tft.setTextColor(ST77XX_WHITE);
-  tft.setCursor(15, 10);
-  tft.println("Connecting to");
-  tft.setCursor(15, 30);
-  tft.println("WiFi...");
-  
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
+  if (!connected) {
+    // If all connection attempts failed, start AP mode
+    Serial.println("All WiFi connection attempts failed. Starting AP mode...");
+    showStatusMessage("Starting AP mode...", true);
     delay(500);
-    tft.print(".");
+    startAPMode();
+    // Start DNS server for captive portal
+    IPAddress apIP = WiFi.softAPIP();
+    dnsServer.start(DNS_PORT, "*", apIP);
+    Serial.println("DNS server started for captive portal");
+  } else {
+    // Setup OTA only if connected to WiFi
+    showStatusMessage("Setting up OTA...", false);
+    delay(300);
+    setupOTA();
   }
-  
-  Serial.print("IP: ");
-  Serial.println(WiFi.localIP());
-  
-  // Setup OTA
-  setupOTA();
   
   #if ENABLE_HOME_ASSISTANT
-  // Setup MQTT
-  setupMQTT();
+  // Setup MQTT (only if connected to WiFi, not in AP mode)
+  if (!isAPMode && WiFi.status() == WL_CONNECTED) {
+    showStatusMessage("Setting up MQTT...", false);
+    delay(300);
+    setupMQTT();
+  }
   #endif
   
   // Setup web server routes
+  showStatusMessage("Starting web server...", false);
+  delay(300);
   server.on("/", HTTP_GET, handleRoot);
   server.on("/json", HTTP_GET, handleData);
   server.on("/setHumidity", HTTP_POST, handleSetHumidity);
+  server.on("/wifi", HTTP_GET, handleWiFiConfig);
+  server.on("/wifi", HTTP_POST, handleWiFiSave);
   server.on("/update", HTTP_GET, []() {
     server.send(200, "text/html", update_html);
   });
   server.on("/update", HTTP_POST, []() {
     server.send(200, "text/plain", "Update started");
   }, handleUpdate);
+  
+  // Captive portal detection endpoints (for Android, iOS, Windows, etc.)
+  server.on("/generate_204", HTTP_GET, []() {
+    if (isAPMode) {
+      server.sendHeader("Location", "/wifi", true);
+      server.send(302, "text/plain", "");
+    } else {
+      server.send(204, "text/plain", "");
+    }
+  });
+  
+  server.on("/hotspot-detect.html", HTTP_GET, []() {
+    if (isAPMode) {
+      server.sendHeader("Location", "/wifi", true);
+      server.send(302, "text/plain", "");
+    } else {
+      server.send(200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+    }
+  });
+  
+  server.on("/success.txt", HTTP_GET, []() {
+    if (isAPMode) {
+      server.sendHeader("Location", "/wifi", true);
+      server.send(302, "text/plain", "");
+    } else {
+      server.send(200, "text/plain", "success");
+    }
+  });
+  
+  server.on("/kindle-wifi/wifiredirect.html", HTTP_GET, []() {
+    if (isAPMode) {
+      server.sendHeader("Location", "/wifi", true);
+      server.send(302, "text/plain", "");
+    } else {
+      server.send(200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+    }
+  });
+  
+  // Catch-all handler for AP mode - redirect everything to WiFi config
+  server.onNotFound([]() {
+    if (isAPMode) {
+      server.sendHeader("Location", "/wifi", true);
+      server.send(302, "text/plain", "");
+    } else {
+      server.send(404, "text/plain", "Not found");
+    }
+  });
+  
   server.begin();
   
+  // Start DNS server if in AP mode (will be started in startAPMode or here if already in AP mode)
+  if (isAPMode) {
+    IPAddress apIP = WiFi.softAPIP();
+    dnsServer.start(DNS_PORT, "*", apIP);  // Redirect all DNS requests to AP IP
+    Serial.println("DNS server started for captive portal");
+  }
+  
+  // Show ready message
+  showStatusMessage("Ready!", true);
+  delay(1000);
+  
+  // Start main display
   updateDisplay();
 }
 
 void loop() {
-  // Handle OTA updates
-  ArduinoOTA.handle();
+  // Handle DNS server for captive portal (only in AP mode)
+  if (isAPMode) {
+    dnsServer.processNextRequest();
+  }
   
-  // Handle WiFi connection
-  if (WiFi.status() != WL_CONNECTED) {
+  // Handle web server requests
+  server.handleClient();
+  
+  // Handle OTA updates (only if connected to WiFi, not in AP mode)
+  if (!isAPMode && WiFi.status() == WL_CONNECTED) {
+  ArduinoOTA.handle();
+  }
+  
+  // Handle WiFi connection (only if not in AP mode)
+  if (!isAPMode && WiFi.status() != WL_CONNECTED) {
     unsigned long currentMillis = millis();
     if (currentMillis - lastWiFiReconnectAttempt >= WIFI_RECONNECT_INTERVAL) {
       lastWiFiReconnectAttempt = currentMillis;
       Serial.println("WiFi disconnected. Attempting to reconnect...");
-      WiFi.disconnect();
-      WiFi.begin(ssid, password);
+      
+      // Try to reconnect with saved credentials
+      bool reconnected = false;
+      if (wifiCredentialsValid) {
+        reconnected = connectToWiFi(wifi_ssid, wifi_password, 10);
+      }
+      
+      if (!reconnected) {
+        // If all reconnection attempts failed, switch to AP mode
+        Serial.println("Reconnection failed. Switching to AP mode...");
+        startAPMode();
+        // Start DNS server for captive portal
+        IPAddress apIP = WiFi.softAPIP();
+        dnsServer.start(DNS_PORT, "*", apIP);
+        Serial.println("DNS server started for captive portal");
+      }
     }
   }
   
@@ -531,9 +504,15 @@ void loop() {
   }
   #endif
   
+  // Handle DNS server for captive portal (only in AP mode)
+  if (isAPMode) {
+    dnsServer.processNextRequest();
+  }
+  
+  // Handle web server requests
   server.handleClient();
   
-  // Read sensors every 5 seconds
+  // Read sensors
   if (millis() - lastSensorRead >= SENSOR_READ_INTERVAL) {
     readSensors();
     lastSensorRead = millis();
@@ -548,7 +527,7 @@ void loop() {
   // Update display with animations
   if (millis() - lastAnimationUpdate >= ANIMATION_UPDATE_INTERVAL) {
     updateDisplay();
-    updateNeoPixel();  // Update NeoPixel status
+    updateNeoPixel();
     lastAnimationUpdate = millis();
   }
   
@@ -559,384 +538,224 @@ void loop() {
   checkUpdateTimeout();
 }
 
-void readSensors() {
-  sensors_event_t humidity, temp;
-  
-  if (usingSHT4x) {
-    sht4.getEvent(&humidity, &temp);
-  } else if (usingSHTC3) {
-    shtc3.getEvent(&humidity, &temp);
-  }
-  
-  currentHumidity = humidity.relative_humidity;
-  currentTemperature = temp.temperature;
+
+// WiFi configuration handlers
+// Pin configuration functions
+void savePinConfiguration() {
+  EEPROM.writeByte(FLOAT_SWITCH_PIN_ADDR, floatSwitchPin);
+  EEPROM.writeByte(COMPRESSOR_RELAY_PIN_ADDR, compressorRelayPin);
+  EEPROM.writeByte(PIN_CONFIG_VALID_ADDR, 1);
+  EEPROM.commit();
+  Serial.print("Pin configuration saved - Float Switch: ");
+  Serial.print(floatSwitchPin);
+  Serial.print(", Compressor Relay: ");
+  Serial.println(compressorRelayPin);
 }
 
-void handleButton() {
-  bool currentState = digitalRead(BOOT_BUTTON);
-  unsigned long currentTime = millis();
-  
-  currentState = !currentState;
-  
-  if (currentState && !buttonPressed) {
-    if (currentTime - lastButtonRelease > DEBOUNCE_TIME) {
-      buttonPressed = true;
-      lastButtonPress = currentTime;
-      buttonHandled = false;
-    }
-  }
-  
-  if (!currentState && buttonPressed) {
-    if (currentTime - lastButtonPress > DEBOUNCE_TIME) {
-      buttonPressed = false;
-      lastButtonRelease = currentTime;
-      
-      if (!buttonHandled) {
-        targetHumidity += 5;
-        if (targetHumidity > 70) targetHumidity = 30;
-        buttonHandled = true;
-      }
-    }
+void loadPinConfiguration() {
+  byte valid = EEPROM.readByte(PIN_CONFIG_VALID_ADDR);
+  if (valid == 1) {
+    floatSwitchPin = EEPROM.readByte(FLOAT_SWITCH_PIN_ADDR);
+    compressorRelayPin = EEPROM.readByte(COMPRESSOR_RELAY_PIN_ADDR);
+    Serial.print("Pin configuration loaded - Float Switch: ");
+    Serial.print(floatSwitchPin);
+    Serial.print(", Compressor Relay: ");
+    Serial.println(compressorRelayPin);
+  } else {
+    // Use defaults
+    floatSwitchPin = FLOAT_SWITCH;
+    compressorRelayPin = DEHUMIDIFIER_RELAY;
+    Serial.println("Using default pin configuration");
   }
 }
 
-void checkFloatSwitch() {
-  bool newState = (digitalRead(FLOAT_SWITCH) == LOW);
-  if (newState != floatSwitchTriggered) {
-    floatSwitchTriggered = newState;
-    Serial.println(floatSwitchTriggered ? "DRAIN FULL!" : "Drain OK");
+void handleWiFiConfig() {
+  String html = "<!DOCTYPE html><html><head><title>WiFi Configuration</title>";
+  html += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">";
+  html += "<style>";
+  html += "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,sans-serif;margin:0;padding:20px;background:#f5f5f5;color:#333}";
+  html += ".container{max-width:600px;margin:0 auto;background:white;padding:20px;border-radius:10px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}";
+  html += "h1{color:#2c3e50;margin:0 0 20px 0;font-size:24px;text-align:center}";
+  html += "h2{color:#34495e;font-size:18px;margin:25px 0 15px 0;border-bottom:2px solid #3498db;padding-bottom:5px}";
+  html += ".form-group{margin-bottom:20px}";
+  html += "label{display:block;margin-bottom:8px;font-weight:500;color:#2c3e50}";
+  html += "input[type=\"text\"],input[type=\"password\"],input[type=\"number\"]{width:100%;padding:10px;border:1px solid #ddd;border-radius:4px;font-size:16px;box-sizing:border-box}";
+  html += "input[type=\"number\"]{max-width:150px}";
+  html += "button{background:#3498db;color:white;border:none;padding:12px 24px;border-radius:4px;cursor:pointer;font-size:16px;width:100%;transition:background 0.3s}";
+  html += "button:hover{background:#2980b9}";
+  html += ".info{background:#e8f4f8;padding:15px;border-radius:4px;margin-bottom:20px;color:#2c3e50}";
+  html += ".status{text-align:center;margin-top:15px;padding:10px;border-radius:4px}";
+  html += ".status.success{background:#dff0d8;color:#3c763d}";
+  html += ".status.error{background:#f2dede;color:#a94442}";
+  html += ".back-link{text-align:center;margin-top:20px}";
+  html += ".back-link a{color:#3498db;text-decoration:none}";
+  html += ".back-link a:hover{text-decoration:underline}";
+  html += ".pin-info{font-size:12px;color:#666;margin-top:5px}";
+  html += "</style></head><body>";
+  html += "<div class=\"container\">";
+  html += "<h1>Device Configuration</h1>";
+  
+  if (isAPMode) {
+    html += "<div class=\"info\">";
+    html += "<strong>Access Point Mode</strong><br>";
+    html += "Configure your WiFi credentials and device pin settings.";
+    html += "</div>";
   }
+  
+  html += "<form action=\"/wifi\" method=\"post\">";
+  
+  // WiFi Configuration Section
+  html += "<h2>WiFi Settings</h2>";
+  html += "<div class=\"form-group\">";
+  html += "<label for=\"ssid\">WiFi Network Name (SSID):</label>";
+  html += "<input type=\"text\" id=\"ssid\" name=\"ssid\" value=\"" + wifi_ssid + "\" placeholder=\"Enter your WiFi network name\">";
+  html += "</div>";
+  html += "<div class=\"form-group\">";
+  html += "<label for=\"password\">WiFi Password:</label>";
+  html += "<input type=\"password\" id=\"password\" name=\"password\" placeholder=\"Enter your WiFi password\">";
+  html += "</div>";
+  
+  // Pin Configuration Section
+  html += "<h2>Pin Configuration</h2>";
+  html += "<div class=\"form-group\">";
+  html += "<label for=\"float_switch_pin\">Float Switch Pin (Condensation Tank Monitor):</label>";
+  html += "<input type=\"number\" id=\"float_switch_pin\" name=\"float_switch_pin\" value=\"" + String(floatSwitchPin) + "\" min=\"0\" max=\"48\" required>";
+  html += "<div class=\"pin-info\">Current: GPIO " + String(floatSwitchPin) + " (Default: " + String(FLOAT_SWITCH) + ")</div>";
+  html += "</div>";
+  html += "<div class=\"form-group\">";
+  html += "<label for=\"compressor_relay_pin\">Compressor Relay Pin:</label>";
+  html += "<input type=\"number\" id=\"compressor_relay_pin\" name=\"compressor_relay_pin\" value=\"" + String(compressorRelayPin) + "\" min=\"0\" max=\"48\" required>";
+  html += "<div class=\"pin-info\">Current: GPIO " + String(compressorRelayPin) + " (Default: " + String(DEHUMIDIFIER_RELAY) + ")</div>";
+  html += "</div>";
+  
+  html += "<button type=\"submit\">Save Configuration</button>";
+  html += "</form>";
+  
+  if (wifiCredentialsValid) {
+    html += "<div class=\"status success\">";
+    html += "Saved WiFi SSID: " + wifi_ssid;
+    html += "</div>";
+  }
+  
+  html += "<div class=\"back-link\">";
+  if (!isAPMode) {
+    html += "<a href=\"/\">Back to Main Page</a>";
+  }
+  html += "</div>";
+  html += "</div></body></html>";
+  
+  server.send(200, "text/html", html);
 }
 
-void controlDehumidifier() {
-  if (!floatSwitchTriggered) {
-    unsigned long currentMillis = millis();
+void handleWiFiSave() {
+  bool pinConfigChanged = false;
+  bool wifiConfigChanged = false;
+  
+  // Handle pin configuration
+  if (server.hasArg("float_switch_pin") && server.hasArg("compressor_relay_pin")) {
+    uint8_t newFloatPin = server.arg("float_switch_pin").toInt();
+    uint8_t newCompressorPin = server.arg("compressor_relay_pin").toInt();
     
-    // Check if compressor is in cooldown period
-    if (!dehumidifierRunning && currentMillis - lastCompressorOff < COMPRESSOR_MIN_OFF_TIME) {
-      // Still in cooldown period
-      if (!compressorInCooldown) {
-        compressorInCooldown = true;
-        EEPROM.writeBool(COMPRESSOR_COOLDOWN_FLAG_ADDR, true);
-        EEPROM.commit();
-      }
+    // Validate pin numbers (ESP32-S2 has GPIO 0-46, but some are reserved)
+    if (newFloatPin <= 48 && newCompressorPin <= 48 && 
+        newFloatPin != newCompressorPin) {
+      floatSwitchPin = newFloatPin;
+      compressorRelayPin = newCompressorPin;
+      savePinConfiguration();
+      pinConfigChanged = true;
+      Serial.println("Pin configuration updated");
+    }
+  }
+  
+  // Handle WiFi credentials
+  if (server.hasArg("ssid")) {
+    String newSSID = server.arg("ssid");
+    String newPassword = server.hasArg("password") ? server.arg("password") : "";
+    
+    if (newSSID.length() > 0 && newSSID.length() <= 32) {
+      // Save credentials
+      saveWiFiCredentials(newSSID, newPassword);
+      wifi_ssid = newSSID;
+      wifi_password = newPassword;
+      wifiCredentialsValid = true;
+      wifiConfigChanged = true;
+    }
+  }
+  
+  // If pins changed, always restart to apply changes
+  if (pinConfigChanged) {
+    String html = "<!DOCTYPE html><html><head><title>Configuration Saved</title>";
+    html += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">";
+    html += "<meta http-equiv=\"refresh\" content=\"3;url=/wifi\">";
+    html += "<style>";
+    html += "body{font-family:Arial;text-align:center;padding:50px;background:#f5f5f5}";
+    html += ".container{max-width:400px;margin:0 auto;background:white;padding:30px;border-radius:10px}";
+    html += "h1{color:#2c3e50}";
+    html += "</style></head><body>";
+    html += "<div class=\"container\">";
+    html += "<h1>Configuration Saved</h1>";
+    html += "<p>Pin configuration updated. Device will restart to apply changes.</p>";
+    html += "</div></body></html>";
+    server.send(200, "text/html", html);
+    delay(1000);
+    ESP.restart();
+    return;
+  }
+  
+  // If WiFi config changed, try to connect
+  if (wifiConfigChanged && server.hasArg("ssid")) {
+    String newSSID = server.arg("ssid");
+    String newPassword = server.hasArg("password") ? server.arg("password") : "";
+    
+    Serial.println("Attempting to connect with new credentials...");
+    
+    String html = "<!DOCTYPE html><html><head><title>Connecting...</title>";
+    html += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">";
+    html += "<meta http-equiv=\"refresh\" content=\"5;url=/\">";
+    html += "<style>";
+    html += "body{font-family:Arial;text-align:center;padding:50px;background:#f5f5f5}";
+    html += ".container{max-width:400px;margin:0 auto;background:white;padding:30px;border-radius:10px}";
+    html += "h1{color:#2c3e50}";
+    html += ".spinner{border:4px solid #f3f3f3;border-top:4px solid #3498db;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite;margin:20px auto}";
+    html += "@keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}";
+    html += "</style></head><body>";
+    html += "<div class=\"container\">";
+    html += "<h1>Connecting to WiFi...</h1>";
+    html += "<div class=\"spinner\"></div>";
+    html += "<p>Please wait while the device connects to your WiFi network.</p>";
+    html += "<p>The device will restart automatically.</p>";
+    html += "</div></body></html>";
+    
+    server.send(200, "text/html", html);
+    
+    // Give the response time to send
+    delay(1000);
+    
+    // Try to connect
+    bool connected = connectToWiFi(newSSID, newPassword, 15);
+    
+    if (connected) {
+      // Success - restart to fully initialize
+      delay(2000);
+      ESP.restart();
     } else {
-      if (compressorInCooldown) {
-        compressorInCooldown = false;
-        EEPROM.writeBool(COMPRESSOR_COOLDOWN_FLAG_ADDR, false);
-        EEPROM.commit();
-      }
-      
-      bool shouldRun = (currentHumidity > targetHumidity + 1);
-      
-      if (shouldRun != dehumidifierRunning) {
-        if (shouldRun && !compressorInCooldown) {
-          // Only start if not in cooldown
-          dehumidifierRunning = true;
-          digitalWrite(DEHUMIDIFIER_RELAY, HIGH);
-          Serial.println("Dehumidifier STARTED");
-        } else if (!shouldRun) {
-          // Always allow stopping
-          dehumidifierRunning = false;
-          digitalWrite(DEHUMIDIFIER_RELAY, LOW);
-          lastCompressorOff = currentMillis;
-          EEPROM.writeULong(LAST_COMPRESSOR_OFF_ADDR, lastCompressorOff);
-          EEPROM.commit();
-          Serial.println("Dehumidifier STOPPED");
-        }
-      }
+      // Failed - stay in AP mode
+      Serial.println("Connection failed. Remaining in AP mode.");
     }
-  }
-}
-
-void updateDisplay() {
-  unsigned long currentMillis = millis();
-  if (currentMillis - lastDisplayUpdate < DISPLAY_UPDATE_INTERVAL) {
-    return;  // Don't update too frequently
-  }
-  lastDisplayUpdate = currentMillis;
-
-  // Only clear the screen on first run
-  static bool firstRun = true;
-  if (firstRun) {
-    tft.fillScreen(ST77XX_BLACK);
-    firstRun = false;
-  }
-
-  // Define display regions
-  const int STATUS_BAR_HEIGHT = 20;
-  const int IP_BAR_HEIGHT = 20;
-  const int MAIN_CONTENT_HEIGHT = 115;
-  
-  // Update status bar
-  updateStatusBar();
-  
-  // Update main content
-  updateMainContent();
-}
-
-void updateStatusBar() {
-  static bool prevWifiConnected = false;
-  static bool prevDehumidifierRunning = false;
-  static bool prevFloatSwitchTriggered = false;
-  static int prevRSSI = -999;
-  static bool prevCompressorInCooldown = false;
-  
-  unsigned long currentMillis = millis();
-  if (currentMillis - lastStatusBarUpdate < STATUS_BAR_UPDATE_INTERVAL) {
-    return;  // Don't update too frequently
-  }
-  
-  bool wifiConnected = (WiFi.status() == WL_CONNECTED);
-  bool needsUpdate = (wifiConnected != prevWifiConnected || 
-                     dehumidifierRunning != prevDehumidifierRunning || 
-                     floatSwitchTriggered != prevFloatSwitchTriggered ||
-                     compressorInCooldown != prevCompressorInCooldown ||
-                     WiFi.RSSI() != prevRSSI);  // Add RSSI change check
-  
-  if (needsUpdate) {
-    lastStatusBarUpdate = currentMillis;
-    tft.fillRect(0, 0, 240, 20, ST77XX_BLACK);
-    
-    // Calculate segment widths
-    int segmentWidth = 240 / 3;
-    
-    // Draw tank status segment (left)
-    uint16_t tankColor = floatSwitchTriggered ? ST77XX_RED : ST77XX_GREEN;
-    tft.fillRect(0, 0, segmentWidth, 20, tankColor);
-    tft.setTextColor(floatSwitchTriggered ? ST77XX_WHITE : ST77XX_BLACK);
-    tft.setFont(&FreeMonoBold9pt7b);
-    tft.setTextSize(1);
-    tft.setCursor(5, 13);
-    tft.print(floatSwitchTriggered ? "FULL" : "OK");
-    
-    // Draw relay status segment (middle)
-    uint16_t relayColor;
-    if (compressorInCooldown) {
-      relayColor = 0xFFA500;  // Orange for cooldown
-    } else {
-      relayColor = dehumidifierRunning ? ST77XX_GREEN : 0x7BEF;
-    }
-    tft.fillRect(segmentWidth, 0, segmentWidth, 20, relayColor);
-    tft.setTextColor(dehumidifierRunning ? ST77XX_BLACK : ST77XX_WHITE);
-    tft.setCursor(segmentWidth + 5, 13);
-    if (compressorInCooldown) {
-      tft.print("COOL");
-    } else {
-      tft.print(dehumidifierRunning ? "ON" : "OFF");
-    }
-    
-    // Draw WiFi status segment (right)
-    uint16_t wifiColor = wifiConnected ? ST77XX_BLACK : ST77XX_RED;
-    tft.fillRect(segmentWidth * 2, 0, segmentWidth, 20, wifiColor);
-    tft.setTextColor(wifiConnected ? ST77XX_WHITE : ST77XX_WHITE);
-    
-    if (wifiConnected) {
-      // Draw signal strength bars
-      int barWidth = 30;
-      int barHeight = 4;
-      int x = segmentWidth * 2 + 5;
-      int y = 3;
-      int numBars = 4;
-      int signalStrength = getWiFiSignalStrength();
-      
-      // Calculate active bars based on signal strength
-      int activeBars;
-      uint16_t barColor;
-      
-      if (signalStrength >= 75) {
-        activeBars = 4;  // Excellent signal - all bars
-        barColor = ST77XX_GREEN;  // Green for excellent signal
-      } else if (signalStrength >= 50) {
-        activeBars = 3;  // Good signal - 3 bars
-        barColor = 0x07E0;  // Yellow-green for good signal
-      } else if (signalStrength >= 25) {
-        activeBars = 2;  // Fair signal - 2 bars
-        barColor = 0xFFE0;  // Yellow for fair signal
-      } else {
-        activeBars = 1;  // Poor signal - 1 bar
-        barColor = 0xFD20;  // Orange for poor signal
-      }
-      
-      // Draw bars with consistent bottom alignment
-      for (int i = 0; i < numBars; i++) {
-        int barX = x + (i * (barWidth / numBars));
-        int barY = y + (barHeight * (numBars - i - 1));
-        uint16_t currentBarColor = (i < activeBars) ? barColor : 0x7BEF;
-        
-        // Draw each bar with consistent height and bottom alignment
-        tft.fillRect(barX, barY, (barWidth / numBars) - 1, barHeight, currentBarColor);
-      }
-      
-      // Draw RSSI value
-      int rssi = WiFi.RSSI();
-      // Clear the area where RSSI will be displayed
-      tft.fillRect(x + barWidth + 2, y, 40, 16, wifiColor);
-      
-      // Draw RSSI value in small font
-      tft.setFont(&FreeMonoBold9pt7b);
-      tft.setTextSize(1);
-      tft.setCursor(x + barWidth + 2, 13);
-      tft.print(rssi);
-      
-      prevRSSI = rssi;
-    } else {
-      tft.setCursor(segmentWidth * 2 + 5, 13);
-      tft.print("OFF");
-    }
-    
-    prevWifiConnected = wifiConnected;
-    prevDehumidifierRunning = dehumidifierRunning;
-    prevFloatSwitchTriggered = floatSwitchTriggered;
-    prevCompressorInCooldown = compressorInCooldown;
-  }
-}
-
-void updateMainContent() {
-  static float prevHumidity = -999;
-  static float prevTargetHumidity = -999;
-  static float prevTemperature = -999;
-  static bool firstRun = true;
-  
-  // Only clear the entire area on first run
-  if (firstRun) {
-    tft.fillRect(0, 45, 240, 90, ST77XX_BLACK);
-    firstRun = false;
-  }
-  
-  // Update humidity if changed (comparing rounded values)
-  float roundedCurrentHumidity = round(currentHumidity * 10.0) / 10.0;
-  float roundedPrevHumidity = round(prevHumidity * 10.0) / 10.0;
-  
-  if (roundedCurrentHumidity != roundedPrevHumidity) {
-    // Clear the entire humidity area with extra width and height
-    tft.fillRect(0, 15, 200, 55, ST77XX_BLACK);
-    
-    // Use smoother font for humidity value
-    tft.setFont(&FreeSansBold18pt7b);
-    tft.setTextSize(1);
-    tft.setTextColor(ST77XX_WHITE);
-    tft.setCursor(15, 65);
-    tft.print(currentHumidity, 1);
-    
-    // Switch to smaller font for percentage
-    //tft.setFont(&FreeMonoBold9pt7b);
-    // tft.setTextSize(2);
-    tft.print("%");
-    prevHumidity = currentHumidity;
-  }
-  
-  // Update target humidity if changed
-  if (targetHumidity != prevTargetHumidity) {
-    // Clear only the target humidity area
-    tft.fillRect(15, 75, 200, 20, ST77XX_BLACK);
-    
-    tft.setFont(&FreeMonoBold9pt7b);
-    tft.setTextSize(1);
-    tft.setTextColor(ST77XX_WHITE);
-    tft.setCursor(15, 85);
-    tft.print("Target: ");
-    tft.print(targetHumidity, 1);
-    tft.print("%");
-    prevTargetHumidity = targetHumidity;
-  }
-  
-  // Draw separator line between humidity and temperature
-  tft.drawLine(10, 92, 230, 92, ST77XX_WHITE);
-  
-  // Update temperature if changed
-  if (currentTemperature != prevTemperature) {
-    // Clear the temperature area
-    tft.fillRect(0, 97, 240, 20, ST77XX_BLACK);
-    
-    tft.setFont(&FreeMonoBold9pt7b);
-    tft.setTextSize(1);
-    tft.setTextColor(ST77XX_WHITE);
-    
-    // Draw temperature value
-    tft.setCursor(15, 112);
-    tft.print(currentTemperature, 1);
-    tft.print("C");
-    
-    // Draw Fahrenheit in smaller text
-    float tempF = (currentTemperature * 9.0 / 5.0) + 32.0;
-    tft.setCursor(80, 112);
-    tft.print("(");
-    tft.print(tempF, 1);
-    tft.print("F)");
-    prevTemperature = currentTemperature;
-  }
-  
-  // Draw separator line between temperature and IP
-  tft.drawLine(10, 117, 230, 117, ST77XX_WHITE);
-  
-  // Always show IP address at the bottom
-  static String lastIP = "";
-  String currentIP = WiFi.localIP().toString();
-  
-  if (currentIP != lastIP) {
-    // Clear the IP area
-    tft.fillRect(0, 122, 240, 15, ST77XX_BLACK);
-    
-    tft.setFont(&FreeMonoBold9pt7b);
-    tft.setTextSize(1);
-    tft.setTextColor(ST77XX_WHITE);
-    tft.setCursor(15, 132);
-    tft.print("IP: ");
-    tft.print(currentIP);
-    lastIP = currentIP;
-  }
-}
-
-void updateNeoPixel() {
-  unsigned long currentMillis = millis();
-  if (currentMillis - lastNeoPixelUpdate >= NEO_PIXEL_UPDATE_INTERVAL) {
-    lastNeoPixelUpdate = currentMillis;
-    
-    if (floatSwitchTriggered) {
-      // Flash bright red when tank is full (problem)
-      if (neoPixelFadeDirection) {
-        neoPixelBrightness += 25;  // Keep fast fade for warning
-        if (neoPixelBrightness >= 255) {
-          neoPixelBrightness = 255;
-          neoPixelFadeDirection = false;
-        }
-      } else {
-        neoPixelBrightness -= 25;  // Keep fast fade for warning
-        if (neoPixelBrightness <= 0) {
-          neoPixelBrightness = 0;
-          neoPixelFadeDirection = true;
-        }
-      }
-      pixel.setPixelColor(0, pixel.Color(neoPixelBrightness, 0, 0));  // Fading red
-      pixel.show();
-    } else if (dehumidifierRunning) {
-      // Solid dim green when compressor is running
-      pixel.setPixelColor(0, pixel.Color(0, 50, 0));  // Dim green
-      pixel.show();
-    } else {
-      // Fade dim green when compressor is off
-      if (neoPixelFadeDirection) {
-        neoPixelBrightness += 2;  // Increased from 1 to 2 for faster fade
-        if (neoPixelBrightness >= 50) {
-          neoPixelBrightness = 50;
-          neoPixelFadeDirection = false;
-        }
-      } else {
-        neoPixelBrightness -= 2;  // Increased from 1 to 2 for faster fade
-        if (neoPixelBrightness <= 0) {
-          neoPixelBrightness = 0;
-          neoPixelFadeDirection = true;
-        }
-      }
-      pixel.setPixelColor(0, pixel.Color(0, neoPixelBrightness, 0));  // Fading dim green
-      pixel.show();
-    }
+  } else if (!wifiConfigChanged && !pinConfigChanged) {
+    server.send(400, "text/plain", "No configuration changes detected");
   }
 }
 
 // Web server handlers
 void handleRoot() {
+  // If in AP mode, redirect to WiFi config
+  if (isAPMode) {
+    server.sendHeader("Location", "/wifi", true);
+    server.send(302, "text/plain", "");
+    return;
+  }
+  
   if (WiFi.status() != WL_CONNECTED) {
     server.send(503, "text/plain", "Service Unavailable - WiFi Disconnected");
     return;
@@ -999,6 +818,7 @@ void handleRoot() {
   html += "<input type=\"number\" name=\"humidity\" id=\"humidity\" min=\"30\" max=\"70\" step=\"5\" value=\"" + String(targetHumidity) + "\">";
   html += "<button type=\"submit\">Set</button></div></form></div>";
   html += "<div class=\"links\">";
+  html += "<a href=\"/wifi\">WiFi Settings</a>";
   html += "<a href=\"/update\">Update Firmware</a>";
   html += "<button type=\"button\" onclick=\"window.location.reload()\" class=\"refresh-button\">Refresh</button>";
   html += "</div>";
@@ -1013,6 +833,11 @@ void handleRoot() {
 }
 
 void handleData() {
+  if (isAPMode) {
+    server.send(200, "application/json", "{\"error\":\"AP Mode - WiFi configuration required\",\"ap_mode\":true,\"ap_ssid\":\"" + String(AP_SSID) + "\",\"ap_ip\":\"" + WiFi.softAPIP().toString() + "\"}");
+    return;
+  }
+  
   if (WiFi.status() != WL_CONNECTED) {
     server.send(503, "application/json", "{\"error\":\"WiFi Disconnected\"}");
     return;
@@ -1142,18 +967,4 @@ void checkUpdateTimeout() {
     tft.println("Timeout!");
     delay(2000);
   }
-}
-
-// Add this function after the other helper functions
-unsigned long getCooldownRemaining() {
-  if (!compressorInCooldown) return 0;
-  unsigned long currentMillis = millis();
-  unsigned long elapsed = currentMillis - lastCompressorOff;
-  if (elapsed >= COMPRESSOR_MIN_OFF_TIME) return 0;
-  return COMPRESSOR_MIN_OFF_TIME - elapsed;
-}
-
-// Add this helper function after the other helper functions
-String getVersionString() {
-  return String(VERSION_MAJOR) + "." + String(VERSION_MINOR) + "." + String(VERSION_PATCH);
 } 

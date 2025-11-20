@@ -1,0 +1,403 @@
+---
+alwaysApply: true
+---
+
+# Product Requirements Document: Dehumidifier Controller
+
+> **⚠️ DOCUMENTATION MAINTENANCE REQUIRED**: This PRD must be kept synchronized with `README.md` and the codebase. See Section 8.1 for maintenance requirements and checklist. Any code changes must include corresponding documentation updates.
+
+## Quick Reference
+- **Last Updated**: Check git history for latest changes
+- **Version**: See Section 8.2 for version history
+- **Maintenance**: See Section 8.1 for documentation sync requirements
+
+## 1. Product Overview
+
+### 1.1 Purpose
+A smart dehumidifier controller system built on ESP32-S2 that replaces broken control boards in dehumidifiers. The system provides local and remote monitoring/control capabilities with a TFT display interface and web-based configuration.
+
+### 1.2 Target Hardware
+- **Primary Platform**: Adafruit ESP32-S2 TFT Feather
+- **Display**: Built-in 240x135 TFT display
+- **Sensors**: Adafruit Sensirion SHT40 or SHTC3 temperature/humidity sensor (auto-detected)
+- **Inputs**: Built-in BOOT button (GPIO 0), configurable float switch pin, configurable compressor relay pin
+- **Outputs**: Configurable relay control pin, NeoPixel status LED
+
+### 1.3 Key Features
+- Real-time humidity and temperature monitoring
+- Automatic dehumidifier control based on configurable target humidity
+- Local control via BOOT button
+- Web-based configuration and monitoring
+- Captive portal WiFi setup
+- Over-the-Air (OTA) firmware updates
+- Optional Home Assistant integration via MQTT
+- Visual status indicators (TFT display + NeoPixel LED)
+- Compressor cooldown protection (5-minute minimum off time)
+- Condensate tank monitoring via float switch
+
+## 2. Functional Requirements
+
+### 2.1 Core Control Logic
+
+#### 2.1.1 Humidity Control
+- **FR-001**: System shall maintain humidity within ±1% of target humidity setting
+- **FR-002**: Target humidity range: 30-70% in 5% increments
+- **FR-003**: System shall automatically start compressor when humidity exceeds (target + 1%)
+- **FR-004**: System shall automatically stop compressor when humidity falls below target
+- **FR-005**: Target humidity setting shall persist across power cycles (stored in EEPROM)
+
+#### 2.1.2 Compressor Protection
+- **FR-006**: System shall enforce minimum 5-minute cooldown period between compressor cycles
+- **FR-007**: Cooldown state shall persist across power cycles (stored in EEPROM)
+- **FR-008**: System shall display "COOL" status during cooldown period
+- **FR-009**: System shall prevent compressor start during cooldown period
+
+#### 2.1.3 Safety Features
+- **FR-010**: System shall immediately stop compressor when float switch indicates full tank
+- **FR-011**: System shall display "FULL" warning when tank is full
+- **FR-012**: System shall prevent compressor operation while tank is full
+- **FR-013**: System shall continue operating even if sensors are not detected (graceful degradation)
+
+### 2.2 User Interface
+
+#### 2.2.1 TFT Display
+- **FR-014**: Display shall show current humidity in large, readable format (18pt font)
+- **FR-015**: Display shall show target humidity setting
+- **FR-016**: Display shall show temperature in both Celsius and Fahrenheit
+- **FR-017**: Display shall show IP address (or AP mode indicator)
+- **FR-018**: Display shall update at 200Hz refresh rate for smooth animations
+- **FR-019**: Display shall show status bar with:
+  - Tank level status (OK/FULL)
+  - Relay status (ON/OFF/COOL)
+  - WiFi connection status with signal strength bars
+- **FR-020**: Display shall show startup animation on boot
+- **FR-021**: Display shall show status messages during initialization
+- **FR-022**: Display shall show WiFi setup information when in AP mode
+
+#### 2.2.2 Button Control
+- **FR-023**: BOOT button press shall increment target humidity by 5%
+- **FR-024**: Target humidity shall wrap from 70% to 30% when incremented beyond maximum
+- **FR-025**: Button shall have 50ms debounce time
+- **FR-026**: Target humidity changes shall be saved immediately to EEPROM
+
+#### 2.2.3 NeoPixel Status LED
+- **FR-027**: LED shall show green pulsing when compressor is running
+- **FR-028**: LED shall show red pulsing when tank is full
+- **FR-029**: LED shall show green fading when compressor is off and tank is OK
+- **FR-030**: LED brightness shall be set to 50 (out of 255)
+
+### 2.3 WiFi and Network
+
+#### 2.3.1 WiFi Connection
+- **FR-031**: System shall attempt to connect to configured WiFi network on startup
+- **FR-032**: System shall store WiFi credentials in EEPROM
+- **FR-033**: System shall attempt WiFi reconnection every 5 seconds if disconnected
+- **FR-034**: System shall enter AP mode if WiFi connection fails
+- **FR-035**: System shall display WiFi signal strength as 4-level bar indicator
+- **FR-036**: System shall display RSSI value next to signal bars
+
+#### 2.3.2 Access Point Mode
+- **FR-037**: System shall create WiFi AP with SSID "Dehumidifier-Setup" when connection fails
+- **FR-038**: AP password shall be "setup12345"
+- **FR-039**: System shall implement captive portal (DNS server) to auto-open config page
+- **FR-040**: System shall support captive portal detection for Android, iOS, Windows, and Kindle
+- **FR-041**: System shall display AP SSID, password, and IP address on TFT display
+- **FR-042**: System shall redirect all HTTP requests to WiFi config page when in AP mode
+
+#### 2.3.3 Web Server
+- **FR-043**: System shall provide web interface on port 80
+- **FR-044**: Web interface shall display:
+  - Current humidity and temperature
+  - Target humidity setting
+  - Compressor status
+  - Tank status
+  - Cooldown status
+  - WiFi connection status
+- **FR-045**: Web interface shall allow setting target humidity
+- **FR-046**: Web interface shall provide JSON API endpoint at `/json`
+- **FR-047**: Web interface shall provide firmware update page at `/update`
+- **FR-048**: Web interface shall provide WiFi configuration page at `/wifi`
+
+### 2.4 Configuration
+
+#### 2.4.1 WiFi Configuration
+- **FR-049**: System shall provide web-based WiFi credential configuration
+- **FR-050**: Configuration page shall allow entering SSID and password
+- **FR-051**: System shall validate SSID length (1-32 characters)
+- **FR-052**: System shall attempt connection after saving WiFi credentials
+- **FR-053**: System shall restart after successful WiFi connection
+
+#### 2.4.2 Pin Configuration
+- **FR-054**: System shall allow configuration of float switch pin via web UI
+- **FR-055**: System shall allow configuration of compressor relay pin via web UI
+- **FR-056**: Pin configuration shall be validated (0-48, must be different)
+- **FR-057**: Pin configuration shall persist in EEPROM
+- **FR-058**: System shall restart after pin configuration changes
+- **FR-059**: Default pins: GPIO 12 (float switch), GPIO 13 (compressor relay)
+
+### 2.5 Firmware Updates
+
+#### 2.5.1 Over-the-Air Updates
+- **FR-060**: System shall support OTA firmware updates via web interface
+- **FR-061**: OTA updates shall only work when connected to WiFi (not in AP mode)
+- **FR-062**: System shall display update progress on TFT display
+- **FR-063**: System shall display update success/failure messages
+- **FR-064**: System shall restart automatically after successful update
+- **FR-065**: System shall timeout updates after 5 minutes
+
+### 2.6 Sensor Management
+
+#### 2.6.1 Sensor Detection
+- **FR-066**: System shall auto-detect SHT4x sensor if connected
+- **FR-067**: System shall auto-detect SHTC3 sensor if SHT4x not found
+- **FR-068**: System shall continue operation if no sensor detected (graceful degradation)
+- **FR-069**: System shall read sensors every 2 seconds
+- **FR-070**: System shall display sensor initialization status during boot
+
+### 2.7 Home Assistant Integration (Optional)
+
+#### 2.7.1 MQTT Integration
+- **FR-071**: System shall support MQTT integration when `ENABLE_HOME_ASSISTANT` is true
+- **FR-072**: System shall publish device state every 5 seconds
+- **FR-073**: System shall support Home Assistant auto-discovery
+- **FR-074**: System shall subscribe to command topic for remote control
+- **FR-075**: System shall publish availability status
+- **FR-076**: System shall attempt MQTT reconnection every 5 seconds if disconnected
+
+## 3. Non-Functional Requirements
+
+### 3.1 Performance
+- **NFR-001**: Display updates shall occur at 200Hz (5ms interval)
+- **NFR-002**: Sensor readings shall occur every 2 seconds
+- **NFR-003**: Status bar updates shall occur every 1 second
+- **NFR-004**: Web server shall respond to requests within 100ms
+- **NFR-005**: System shall use less than 40% of available program storage
+- **NFR-006**: System shall use less than 25% of available dynamic memory
+
+### 3.2 Reliability
+- **NFR-007**: System shall recover from WiFi disconnections automatically
+- **NFR-008**: System shall recover from sensor failures gracefully
+- **NFR-009**: System shall persist critical state across power cycles
+- **NFR-010**: System shall not hang during initialization if sensors are missing
+
+### 3.3 Usability
+- **NFR-011**: Display shall be readable from 2-3 feet away
+- **NFR-012**: Status indicators shall be color-coded for quick recognition
+- **NFR-013**: Web interface shall be mobile-responsive
+- **NFR-014**: Configuration shall be intuitive and require minimal technical knowledge
+- **NFR-015**: Captive portal shall auto-open on mobile devices
+
+### 3.4 Maintainability
+- **NFR-016**: Code shall be modular with clear separation of concerns
+- **NFR-017**: Configuration shall be centralized in config.h
+- **NFR-018**: System shall support OTA updates for easy maintenance
+- **NFR-019**: Code shall follow Arduino/ESP32 best practices
+
+## 4. Technical Specifications
+
+### 4.1 Hardware Interfaces
+- **GPIO 0**: BOOT button input (INPUT_PULLUP)
+- **GPIO 7**: TFT CS
+- **GPIO 12**: Default float switch input (INPUT_PULLUP, configurable)
+- **GPIO 13**: Default compressor relay output (OUTPUT, configurable)
+- **GPIO 21**: TFT I2C power
+- **GPIO 39**: TFT DC
+- **GPIO 40**: TFT RST
+- **GPIO 45**: TFT backlight
+- **GPIO 1**: NeoPixel data
+- **I2C**: Sensor connection (SHT4x/SHTC3)
+
+### 4.2 Data Storage (EEPROM)
+- **Address 0-3**: Target humidity (float)
+- **Address 4-7**: Last compressor off timestamp (unsigned long)
+- **Address 8**: Compressor cooldown flag (bool)
+- **Address 16-47**: WiFi SSID (32 bytes)
+- **Address 48-111**: WiFi password (64 bytes)
+- **Address 112**: WiFi credentials valid flag (byte)
+- **Address 113**: Float switch pin (byte)
+- **Address 114**: Compressor relay pin (byte)
+- **Address 115**: Pin configuration valid flag (byte)
+
+### 4.3 Network Protocols
+- **HTTP**: Port 80 for web interface
+- **DNS**: Port 53 for captive portal
+- **MQTT**: Port 1883 (when Home Assistant enabled)
+- **OTA**: Port 3232 (ArduinoOTA default)
+
+### 4.4 Timing Constants
+- Sensor read interval: 2000ms
+- Display update interval: 5ms
+- Status bar update interval: 1000ms
+- WiFi reconnect interval: 5000ms
+- Compressor minimum off time: 300000ms (5 minutes)
+- Button debounce time: 50ms
+
+## 5. User Stories
+
+### 5.1 As a homeowner
+- I want to control my dehumidifier remotely so I can adjust settings without going to the basement
+- I want to see current humidity levels so I know if the dehumidifier is working
+- I want the system to automatically control the dehumidifier so I don't have to manually turn it on/off
+- I want to be notified when the tank is full so I can empty it before it overflows
+
+### 5.2 As a technician
+- I want to configure WiFi credentials easily so I can set up the device quickly
+- I want to configure pin assignments so I can adapt to different hardware configurations
+- I want to update firmware remotely so I don't have to physically access the device
+- I want to see detailed status information so I can troubleshoot issues
+
+### 5.3 As a smart home user
+- I want to integrate with Home Assistant so I can control the dehumidifier from my home automation system
+- I want to see humidity trends so I can optimize my home's climate control
+- I want to receive alerts when the tank is full so I can empty it promptly
+
+## 6. Constraints and Assumptions
+
+### 6.1 Constraints
+- ESP32-S2 has limited GPIO pins (must be configurable)
+- EEPROM size is limited to 512 bytes
+- Display resolution is fixed at 240x135 pixels
+- Compressor requires minimum 5-minute cooldown period
+- WiFi range is limited by ESP32-S2 radio capabilities
+
+### 6.2 Assumptions
+- User has basic WiFi network knowledge
+- User has access to a computer or mobile device for initial setup
+- Dehumidifier has a standard relay control interface
+- Float switch is normally-open and closes when tank is full
+- Power supply is stable and adequate for ESP32-S2 and relay
+
+## 7. Future Enhancements
+
+### 7.1 Potential Features
+- Scheduled operation (time-based control)
+- Humidity history logging
+- Multiple sensor support (average readings)
+- Email/SMS alerts for tank full condition
+- Integration with other smart home platforms (Alexa, Google Home)
+- Energy usage monitoring
+- Customizable display themes
+- Multi-language support
+
+### 7.2 Technical Improvements
+- WebSocket support for real-time updates
+- RESTful API for advanced integrations
+- Configuration backup/restore
+- Factory reset functionality
+- Advanced sensor calibration options
+- Power consumption optimization
+
+## 8. Documentation Maintenance
+
+### 8.1 Documentation Synchronization Requirements
+
+**CRITICAL**: The PRD (`prd.mdc`) and README (`README.md`) must be kept synchronized with the codebase at all times.
+
+#### 8.1.1 When Documentation Must Be Updated
+
+Documentation must be updated whenever any of the following changes occur:
+
+- **Feature Changes**: Any new features, removed features, or modified functionality
+- **Hardware Changes**: Pin assignments, hardware requirements, or supported hardware
+- **Configuration Changes**: New configuration options, EEPROM layout changes, or default values
+- **API Changes**: New endpoints, changed endpoints, or modified JSON responses
+- **Protocol Changes**: WiFi settings, MQTT topics, or network protocols
+- **UI Changes**: Display layout, web interface changes, or user interaction changes
+- **Version Updates**: Any version number changes or release notes
+
+#### 8.1.2 Documentation Update Checklist
+
+When making code changes, ensure the following are updated:
+
+**PRD Updates Required:**
+- [ ] Functional Requirements (FR-XXX) - Add/modify/remove as needed
+- [ ] Non-Functional Requirements (NFR-XXX) - Update performance, reliability, usability specs
+- [ ] Technical Specifications - Update hardware interfaces, EEPROM layout, protocols, timing
+- [ ] User Stories - Add new user stories if new use cases are introduced
+- [ ] Version History - Document changes in new version entry
+
+**README Updates Required:**
+- [ ] Hardware Requirements - Update if new hardware is required
+- [ ] Pin Connections - Update if pin assignments change
+- [ ] Software Setup - Update installation instructions if dependencies change
+- [ ] Features List - Add/remove features as they change
+- [ ] Display Features - Update if display layout or information changes
+- [ ] Web Interface - Update endpoints, features, or usage instructions
+- [ ] Configuration Instructions - Update if configuration process changes
+- [ ] Troubleshooting - Add new issues/solutions as discovered
+
+#### 8.1.3 Synchronization Points
+
+The following sections must match between PRD and README:
+
+| PRD Section | README Section | Sync Requirement |
+|------------|----------------|------------------|
+| 1.2 Target Hardware | Hardware Requirements | Must match exactly |
+| 4.1 Hardware Interfaces | Pin Connections | Must match exactly |
+| 2.3.2 Access Point Mode | WiFi Setup | Must match SSID/password |
+| 2.4.2 Pin Configuration | Pin Connections | Must match default pins |
+| 2.5.1 OTA Updates | OTA Updates | Must match process |
+| 2.7.1 MQTT Integration | Home Assistant Integration | Must match topics/settings |
+| 2.2.1 TFT Display | Display Features | Must match capabilities |
+| 2.3.3 Web Server | Web Interface | Must match endpoints |
+
+#### 8.1.4 Documentation Maintenance Process
+
+1. **Before Making Code Changes:**
+   - Review current PRD and README
+   - Identify which sections will be affected
+   - Plan documentation updates alongside code changes
+
+2. **During Code Changes:**
+   - Update code comments if functionality changes
+   - Update inline documentation (function headers, etc.)
+   - Note any breaking changes
+
+3. **After Code Changes:**
+   - Update PRD with new/modified requirements
+   - Update README with new/modified instructions
+   - Verify synchronization between PRD and README
+   - Update version history in PRD
+   - Test that documentation examples still work
+
+4. **Before Release:**
+   - Complete documentation review checklist
+   - Verify all code examples in README are current
+   - Ensure all feature lists are accurate
+   - Check that troubleshooting section covers known issues
+   - Verify version numbers match across all documents
+
+#### 8.1.5 Documentation Standards
+
+- **Accuracy**: All information must be accurate and testable
+- **Completeness**: All features must be documented
+- **Clarity**: Documentation must be clear and understandable
+- **Examples**: Code examples must be current and functional
+- **Consistency**: Terminology and formatting must be consistent
+- **Currency**: Documentation must reflect current codebase state
+
+#### 8.1.6 Automated Documentation Checks
+
+Consider implementing:
+- Pre-commit hooks to check for documentation updates
+- CI/CD checks to verify PRD and README synchronization
+- Automated generation of feature lists from code comments
+- Version number consistency checks
+
+#### 8.1.7 Documentation Review Schedule
+
+- **Before each release**: Full documentation review
+- **After major features**: Update relevant sections immediately
+- **Monthly**: Review for accuracy and completeness
+- **When bugs are fixed**: Update troubleshooting section if needed
+
+### 8.2 Version History
+
+#### Version 1.0.0
+- Initial release with core functionality
+- WiFi configuration and captive portal
+- Web interface and OTA updates
+- Pin configuration support
+- Home Assistant integration (optional)
+- Modular code architecture
+- Documentation maintenance requirements established

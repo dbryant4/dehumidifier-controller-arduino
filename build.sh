@@ -9,9 +9,31 @@ NC='\033[0m' # No Color
 # Configuration
 SKETCH_NAME="dehumidifier-controller-arduino"
 BOARD="esp32:esp32:adafruit_feather_esp32s2_tft"  # Updated to match working script
-PORT="/dev/tty.usbserial-*"  # Adjust this based on your system
 BUILD_DIR="build"
 BIN_FILE="${SKETCH_NAME}.ino.bin"
+
+# Function to detect serial port
+detect_port() {
+    # Try to detect port using arduino-cli (preferred method)
+    DETECTED_PORT=$(arduino-cli board list 2>/dev/null | grep -i "esp32" | grep -v "Unknown" | awk '{print $1}' | head -1)
+    
+    if [ -n "$DETECTED_PORT" ] && [ -e "$DETECTED_PORT" ]; then
+        echo "$DETECTED_PORT"
+        return 0
+    fi
+    
+    # Fallback: try common port patterns (macOS uses /dev/cu.*, Linux uses /dev/ttyUSB*)
+    for pattern in "/dev/cu.usbmodem*" "/dev/cu.usbserial*" "/dev/cu.SLAB*" "/dev/tty.usbserial*" "/dev/ttyUSB*"; do
+        # Use find to avoid shell expansion issues
+        PORT_CANDIDATE=$(find /dev -name "$(basename $pattern)" 2>/dev/null | head -1)
+        if [ -n "$PORT_CANDIDATE" ] && [ -e "$PORT_CANDIDATE" ]; then
+            echo "$PORT_CANDIDATE"
+            return 0
+        fi
+    done
+    
+    return 1
+}
 
 echo -e "${YELLOW}Building ${SKETCH_NAME} for ESP32-S2...${NC}"
 
@@ -68,13 +90,31 @@ fi
 read -p "Do you want to upload via serial port? (y/n) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
+    echo -e "${YELLOW}Detecting serial port...${NC}"
+    PORT=$(detect_port)
+    
+    if [ -z "$PORT" ]; then
+        echo -e "${RED}Could not auto-detect serial port.${NC}"
+        echo -e "${YELLOW}Available ports:${NC}"
+        arduino-cli board list 2>/dev/null || echo "No boards detected"
+        echo ""
+        read -p "Enter serial port path manually (or press Enter to skip): " PORT
+        if [ -z "$PORT" ]; then
+            echo -e "${YELLOW}Upload skipped. You can upload the binary file manually.${NC}"
+            exit 0
+        fi
+    else
+        echo -e "${GREEN}Detected port: ${PORT}${NC}"
+    fi
+    
     echo -e "${YELLOW}Uploading via serial port...${NC}"
-    arduino-cli upload -p ${PORT} --fqbn ${BOARD} --input-dir ${BUILD_DIR} ${SKETCH_NAME}
+    arduino-cli upload -p "${PORT}" --fqbn ${BOARD} --input-dir ${BUILD_DIR} ${SKETCH_NAME}
     
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}Upload successful!${NC}"
     else
         echo -e "${RED}Upload failed!${NC}"
+        echo -e "${YELLOW}You can upload the binary file manually through the web interface${NC}"
         exit 1
     fi
 fi 

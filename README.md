@@ -2,6 +2,8 @@
 
 This project uses an Adafruit ESP32-S2 TFT Feather and either a Sensirion SHT40 or SHTC3 temperature/humidity sensor to control a dehumidifier with a broken control board. The system provides a user interface through a TFT display and web interface, allowing remote monitoring and control.
 
+> **📋 Documentation**: For detailed requirements and specifications, see the [Product Requirements Document](.cursor/rules/prd.mdc). This README and the PRD are kept synchronized - both must be updated when making code changes.
+
 ## Hardware Requirements
 
 - Adafruit ESP32-S2 TFT Feather (https://www.adafruit.com/product/5300)
