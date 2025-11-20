@@ -4,7 +4,7 @@
 // Version information
 #define VERSION_MAJOR 1
 #define VERSION_MINOR 0
-#define VERSION_PATCH 0
+#define VERSION_PATCH 2
 #define VERSION_BUILD __DATE__ " " __TIME__
 
 // Configuration flags
@@ -31,6 +31,7 @@
 #define FLOAT_SWITCH_PIN_ADDR 113  // 1 byte for float switch pin
 #define COMPRESSOR_RELAY_PIN_ADDR 114  // 1 byte for compressor relay pin
 #define PIN_CONFIG_VALID_ADDR 115  // 1 byte flag to indicate if pin config is valid
+#define FLOAT_SWITCH_INVERTED_ADDR 116  // 1 byte flag to indicate if float switch is inverted
 
 // Timing constants
 #define SENSOR_READ_INTERVAL 2000  // Read sensors every 2 seconds

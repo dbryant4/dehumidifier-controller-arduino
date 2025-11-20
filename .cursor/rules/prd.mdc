@@ -393,6 +393,12 @@ Consider implementing:
 
 ### 8.2 Version History
 
+#### Version 1.0.2 (2025-11-19)
+- patch bump
+
+#### Version 1.0.1 (2025-11-19)
+- patch bump
+
 #### Version 1.0.0
 - Initial release with core functionality
 - WiFi configuration and captive portal

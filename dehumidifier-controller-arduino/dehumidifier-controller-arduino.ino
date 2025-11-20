@@ -53,11 +53,13 @@ unsigned long lastSensorRead = 0;
 unsigned long lastAnimationUpdate = 0;
 unsigned long lastWiFiReconnectAttempt = 0;
 bool isUpdating = false;
+bool updateComplete = false;  // Flag to indicate update completed successfully
 unsigned long updateStartTime = 0;
 
 // Pin configuration (configurable via web UI)
 uint8_t floatSwitchPin = FLOAT_SWITCH;  // Default pin
 uint8_t compressorRelayPin = DEHUMIDIFIER_RELAY;  // Default pin
+bool floatSwitchInverted = false;  // Whether float switch logic is inverted
 
 // Web server
 WebServer server(80);
@@ -329,8 +331,8 @@ void setup() {
       delay(500);
       showStatusMessage("WiFi Connected!", true);
       delay(1000);
-      Serial.print("IP: ");
-      Serial.println(WiFi.localIP());
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
     } else {
       showProgressBar(0, "Connection failed");
       delay(500);
@@ -354,7 +356,7 @@ void setup() {
     // Setup OTA only if connected to WiFi
     showStatusMessage("Setting up OTA...", false);
     delay(300);
-    setupOTA();
+  setupOTA();
   }
   
   #if ENABLE_HOME_ASSISTANT
@@ -362,7 +364,7 @@ void setup() {
   if (!isAPMode && WiFi.status() == WL_CONNECTED) {
     showStatusMessage("Setting up MQTT...", false);
     delay(300);
-    setupMQTT();
+  setupMQTT();
   }
   #endif
   
@@ -378,8 +380,53 @@ void setup() {
     server.send(200, "text/html", update_html);
   });
   server.on("/update", HTTP_POST, []() {
-    server.send(200, "text/plain", "Update started");
-  }, handleUpdate);
+    // POST handler is called after upload completes
+    Serial.println("POST handler called - checking update status...");
+    Serial.println("  isUpdating: " + String(isUpdating));
+    Serial.println("  updateComplete: " + String(updateComplete));
+    Serial.println("  Update.hasError(): " + String(Update.hasError()));
+    
+    // Check if update was successful
+    if (Update.hasError()) {
+      String errorMsg = "Update failed - Error code: " + String(Update.getError());
+      Update.printError(Serial);
+      Serial.println("Sending error response: " + errorMsg);
+      server.send(500, "text/plain", errorMsg);
+      isUpdating = false;
+      updateComplete = false;
+    } else if (updateComplete && !isUpdating) {
+      // Upload completed successfully - verify before restarting
+      Serial.println("Update completed successfully!");
+      Serial.println("  Update size: " + String(Update.size()));
+      Serial.println("  Update remaining: " + String(Update.remaining()));
+      
+      // Send success response
+      Serial.println("Sending success response...");
+      server.send(200, "text/plain", "Update successful! Device will restart...");
+      
+      // Flush any pending serial output
+      Serial.flush();
+      
+      // Give the response time to send before restarting
+      delay(1000);
+      
+      // Restart the device
+      Serial.println("Restarting device NOW...");
+      updateComplete = false;  // Reset flag
+      delay(100);  // Small delay to ensure serial output is sent
+      ESP.restart();
+    } else if (isUpdating) {
+      // Still uploading
+      Serial.println("Upload still in progress...");
+      server.send(200, "text/plain", "Upload in progress...");
+    } else {
+      // Upload not started or failed silently
+      Serial.println("WARNING: Upload handler called but update not complete!");
+      Serial.println("  This might indicate the upload didn't finish properly.");
+      server.send(200, "text/plain", "Upload status unclear. Check serial output.");
+    }
+  });
+  server.onFileUpload(handleUpdate);
   
   // Captive portal detection endpoints (for Android, iOS, Windows, etc.)
   server.on("/generate_204", HTTP_GET, []() {
@@ -453,6 +500,9 @@ void loop() {
   
   // Handle web server requests
   server.handleClient();
+  
+  // Check for update timeout
+  checkUpdateTimeout();
   
   // Handle OTA updates (only if connected to WiFi, not in AP mode)
   if (!isAPMode && WiFi.status() == WL_CONNECTED) {
@@ -544,11 +594,14 @@ void loop() {
 void savePinConfiguration() {
   EEPROM.writeByte(FLOAT_SWITCH_PIN_ADDR, floatSwitchPin);
   EEPROM.writeByte(COMPRESSOR_RELAY_PIN_ADDR, compressorRelayPin);
+  EEPROM.writeByte(FLOAT_SWITCH_INVERTED_ADDR, floatSwitchInverted ? 1 : 0);
   EEPROM.writeByte(PIN_CONFIG_VALID_ADDR, 1);
-  EEPROM.commit();
-  Serial.print("Pin configuration saved - Float Switch: ");
+        EEPROM.commit();
+  Serial.print("Pin configuration saved - Float Switch: GPIO ");
   Serial.print(floatSwitchPin);
-  Serial.print(", Compressor Relay: ");
+  Serial.print(" (inverted: ");
+  Serial.print(floatSwitchInverted ? "yes" : "no");
+  Serial.print("), Compressor Relay: GPIO ");
   Serial.println(compressorRelayPin);
 }
 
@@ -557,14 +610,18 @@ void loadPinConfiguration() {
   if (valid == 1) {
     floatSwitchPin = EEPROM.readByte(FLOAT_SWITCH_PIN_ADDR);
     compressorRelayPin = EEPROM.readByte(COMPRESSOR_RELAY_PIN_ADDR);
-    Serial.print("Pin configuration loaded - Float Switch: ");
+    floatSwitchInverted = (EEPROM.readByte(FLOAT_SWITCH_INVERTED_ADDR) == 1);
+    Serial.print("Pin configuration loaded - Float Switch: GPIO ");
     Serial.print(floatSwitchPin);
-    Serial.print(", Compressor Relay: ");
+    Serial.print(" (inverted: ");
+    Serial.print(floatSwitchInverted ? "yes" : "no");
+    Serial.print("), Compressor Relay: GPIO ");
     Serial.println(compressorRelayPin);
-  } else {
+    } else {
     // Use defaults
     floatSwitchPin = FLOAT_SWITCH;
     compressorRelayPin = DEHUMIDIFIER_RELAY;
+    floatSwitchInverted = false;
     Serial.println("Using default pin configuration");
   }
 }
@@ -612,7 +669,10 @@ void handleWiFiConfig() {
   html += "</div>";
   html += "<div class=\"form-group\">";
   html += "<label for=\"password\">WiFi Password:</label>";
-  html += "<input type=\"password\" id=\"password\" name=\"password\" placeholder=\"Enter your WiFi password\">";
+  html += "<input type=\"password\" id=\"password\" name=\"password\" placeholder=\"Leave empty to keep current password\">";
+  html += "<div class=\"pin-info\" style=\"margin-top: 5px; font-size: 12px; color: #666;\">";
+  html += "Leave password empty if you don't want to change WiFi settings";
+  html += "</div>";
   html += "</div>";
   
   // Pin Configuration Section
@@ -621,6 +681,15 @@ void handleWiFiConfig() {
   html += "<label for=\"float_switch_pin\">Float Switch Pin (Condensation Tank Monitor):</label>";
   html += "<input type=\"number\" id=\"float_switch_pin\" name=\"float_switch_pin\" value=\"" + String(floatSwitchPin) + "\" min=\"0\" max=\"48\" required>";
   html += "<div class=\"pin-info\">Current: GPIO " + String(floatSwitchPin) + " (Default: " + String(FLOAT_SWITCH) + ")</div>";
+  html += "<div class=\"form-group\" style=\"margin-top: 10px;\">";
+  html += "<label style=\"display: flex; align-items: center; gap: 8px;\">";
+  html += "<input type=\"checkbox\" id=\"float_switch_inverted\" name=\"float_switch_inverted\" value=\"1\"" + String(floatSwitchInverted ? " checked" : "") + ">";
+  html += "Invert float switch logic (tank full when HIGH instead of LOW)";
+  html += "</label>";
+  html += "<div class=\"pin-info\" style=\"margin-top: 5px; font-size: 12px; color: #666;\">";
+  html += "Default: Tank full when pin is LOW (normally-open switch). Check this if your switch is normally-closed.";
+  html += "</div>";
+  html += "</div>";
   html += "</div>";
   html += "<div class=\"form-group\">";
   html += "<label for=\"compressor_relay_pin\">Compressor Relay Pin:</label>";
@@ -655,30 +724,37 @@ void handleWiFiSave() {
   if (server.hasArg("float_switch_pin") && server.hasArg("compressor_relay_pin")) {
     uint8_t newFloatPin = server.arg("float_switch_pin").toInt();
     uint8_t newCompressorPin = server.arg("compressor_relay_pin").toInt();
+    bool newInverted = server.hasArg("float_switch_inverted");
     
     // Validate pin numbers (ESP32-S2 has GPIO 0-46, but some are reserved)
     if (newFloatPin <= 48 && newCompressorPin <= 48 && 
         newFloatPin != newCompressorPin) {
       floatSwitchPin = newFloatPin;
       compressorRelayPin = newCompressorPin;
+      floatSwitchInverted = newInverted;
       savePinConfiguration();
       pinConfigChanged = true;
       Serial.println("Pin configuration updated");
     }
   }
   
-  // Handle WiFi credentials
-  if (server.hasArg("ssid")) {
+  // Handle WiFi credentials - only update if password is provided
+  // If password is empty, assume user doesn't want to change WiFi settings
+  if (server.hasArg("ssid") && server.hasArg("password")) {
     String newSSID = server.arg("ssid");
-    String newPassword = server.hasArg("password") ? server.arg("password") : "";
+    String newPassword = server.arg("password");
     
-    if (newSSID.length() > 0 && newSSID.length() <= 32) {
+    // Only update WiFi if password is not empty
+    if (newPassword.length() > 0 && newSSID.length() > 0 && newSSID.length() <= 32) {
       // Save credentials
       saveWiFiCredentials(newSSID, newPassword);
       wifi_ssid = newSSID;
       wifi_password = newPassword;
       wifiCredentialsValid = true;
       wifiConfigChanged = true;
+      Serial.println("WiFi credentials updated");
+    } else if (newPassword.length() == 0) {
+      Serial.println("Password empty - skipping WiFi update (assuming no change desired)");
     }
   }
   
@@ -738,7 +814,7 @@ void handleWiFiSave() {
       // Success - restart to fully initialize
       delay(2000);
       ESP.restart();
-    } else {
+      } else {
       // Failed - stay in AP mode
       Serial.println("Connection failed. Remaining in AP mode.");
     }
@@ -777,6 +853,8 @@ void handleRoot() {
   html += ".status-value.running{color:#27ae60}";
   html += ".status-value.standby{color:#7f8c8d}";
   html += ".status-value.full{color:#e74c3c}";
+  html += ".status-value.tank-ok{color:#27ae60}";
+  html += ".status-value.tank-full{color:#e74c3c}";
   html += ".control-panel{background:#f8f9fa;padding:20px;border-radius:8px;margin-top:20px}";
   html += ".humidity-control{display:flex;align-items:center;gap:10px;margin-bottom:15px}";
   html += "input[type=\"number\"]{width:80px;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:16px}";
@@ -810,7 +888,11 @@ void handleRoot() {
     int seconds = remaining % 60;
     html += "<div class=\"cooldown-timer\">" + String(minutes) + "m " + String(seconds) + "s remaining</div>";
   }
-  html += "</div></div>";
+  html += "</div>";
+  html += "<div class=\"status-item\">";
+  html += "<div class=\"status-label\">Condensation Tank</div>";
+  html += "<div class=\"status-value " + String(floatSwitchTriggered ? "tank-full" : "tank-ok") + "\">";
+  html += String(floatSwitchTriggered ? "FULL" : "OK") + "</div></div></div>";
   html += "<div class=\"control-panel\">";
   html += "<form action=\"/setHumidity\" method=\"post\">";
   html += "<div class=\"humidity-control\">";
@@ -818,7 +900,7 @@ void handleRoot() {
   html += "<input type=\"number\" name=\"humidity\" id=\"humidity\" min=\"30\" max=\"70\" step=\"5\" value=\"" + String(targetHumidity) + "\">";
   html += "<button type=\"submit\">Set</button></div></form></div>";
   html += "<div class=\"links\">";
-  html += "<a href=\"/wifi\">WiFi Settings</a>";
+  html += "<a href=\"/wifi\">Settings</a>";
   html += "<a href=\"/update\">Update Firmware</a>";
   html += "<button type=\"button\" onclick=\"window.location.reload()\" class=\"refresh-button\">Refresh</button>";
   html += "</div>";
@@ -881,52 +963,133 @@ void handleSetHumidity() {
   server.send(302, "text/plain", "");
 }
 
-// Add this function to handle the firmware update
+// Handle firmware update upload
 void handleUpdate() {
   HTTPUpload& upload = server.upload();
   
   if (upload.status == UPLOAD_FILE_START) {
     isUpdating = true;
+    updateComplete = false;  // Reset completion flag
     updateStartTime = millis();
     
-    // Clear display and show update message
-    tft.fillScreen(ST77XX_BLACK);
-    tft.setTextColor(ST77XX_WHITE);
-    tft.setTextSize(2);
-    tft.setCursor(10, 50);
-    tft.println("Updating...");
-    tft.setCursor(10, 70);
-    tft.println("Please wait");
+    Serial.println("Update start: " + upload.filename);
     
-    // Start OTA update
+    // Clear display and show prominent update message
+    tft.fillScreen(ST77XX_BLACK);
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setTextSize(3);
+    tft.setCursor(20, 40);
+    tft.println("FIRMWARE");
+    tft.setCursor(30, 70);
+    tft.println("UPDATE");
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setTextSize(1);
+    tft.setCursor(10, 100);
+    tft.println("Please wait...");
+    
+    // Start OTA update - use U_FLASH to update the sketch
     uint32_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
-    if (!Update.begin(maxSketchSpace)) {
+    Serial.println("Max sketch space: " + String(maxSketchSpace));
+    Serial.println("Free heap: " + String(ESP.getFreeHeap()));
+    
+    // Begin update with U_FLASH type
+    if (!Update.begin(maxSketchSpace, U_FLASH)) {
       Update.printError(Serial);
-      server.send(500, "text/plain", "Update failed to begin");
+      Serial.println("Update.begin() failed");
+      Serial.print("Error code: ");
+      Serial.println(Update.getError());
       isUpdating = false;
+      tft.fillScreen(ST77XX_BLACK);
+      tft.setTextColor(ST77XX_RED);
+      tft.setTextSize(2);
+      tft.setCursor(10, 50);
+      tft.println("Update");
+      tft.setCursor(10, 70);
+      tft.println("Failed!");
       return;
     }
+    Serial.println("Update.begin() successful - ready to receive firmware");
+    
   } else if (upload.status == UPLOAD_FILE_WRITE) {
+    // Write data chunk
     if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
       Update.printError(Serial);
-      server.send(500, "text/plain", "Update write failed");
+      Serial.println("Update.write() failed");
       isUpdating = false;
+      tft.fillScreen(ST77XX_BLACK);
+      tft.setTextColor(ST77XX_RED);
+      tft.setTextSize(2);
+      tft.setCursor(10, 50);
+      tft.println("Write");
+      tft.setCursor(10, 70);
+      tft.println("Failed!");
       return;
     }
     
-    // Show progress
-    int progress = (upload.totalSize * 100) / upload.currentSize;
+    // Show progress on display - update more frequently
+    if (upload.totalSize > 0) {
+      int progress = (upload.currentSize * 100) / upload.totalSize;
     int barWidth = 200;
-    int barHeight = 20;
+      int barHeight = 25;
     int x = (240 - barWidth) / 2;
-    int y = 100;
+      int y = 110;
     
-    tft.fillRect(x, y, barWidth, barHeight, ST77XX_BLACK);
+      // Clear and redraw progress bar with percentage
+      tft.fillRect(x, y, barWidth, barHeight + 20, ST77XX_BLACK);
     tft.drawRect(x, y, barWidth, barHeight, ST77XX_WHITE);
-    tft.fillRect(x + 1, y + 1, (barWidth - 2) * progress / 100, barHeight - 2, ST77XX_GREEN);
+      int progressWidth = ((barWidth - 2) * progress) / 100;
+      tft.fillRect(x + 1, y + 1, progressWidth, barHeight - 2, ST77XX_GREEN);
+      
+      // Show percentage text
+      tft.setTextColor(ST77XX_WHITE);
+      tft.setTextSize(2);
+      tft.setCursor(x + barWidth/2 - 20, y + barHeight + 5);
+      tft.print(String(progress) + "%");
+      
+      Serial.println("Progress: " + String(progress) + "%");
+    }
     
   } else if (upload.status == UPLOAD_FILE_END) {
-    if (Update.end(true)) {
+    Serial.println("=== UPLOAD_FILE_END ===");
+    Serial.println("Total size expected: " + String(upload.totalSize));
+    Serial.println("Current size received: " + String(upload.currentSize));
+    Serial.println("Update.size() so far: " + String(Update.size()));
+    Serial.println("Update.remaining(): " + String(Update.remaining()));
+    
+    // Verify we received the complete file
+    if (upload.totalSize > 0 && upload.currentSize != upload.totalSize) {
+      Serial.println("ERROR: Size mismatch! Expected: " + String(upload.totalSize) + ", Got: " + String(upload.currentSize));
+      Update.abort();
+      isUpdating = false;
+      updateComplete = false;
+      tft.fillScreen(ST77XX_BLACK);
+      tft.setTextColor(ST77XX_RED);
+      tft.setTextSize(2);
+      tft.setCursor(10, 50);
+      tft.println("Size");
+      tft.setCursor(10, 70);
+      tft.println("Mismatch!");
+      return;
+    }
+    
+    // Finalize and commit the update
+    // The 'true' parameter commits the update even if size doesn't match exactly
+    // But we've already checked for size mismatch above
+    Serial.println("Calling Update.end(true) to finalize and commit firmware...");
+    bool endResult = Update.end(true);
+    
+    Serial.println("Update.end() returned: " + String(endResult ? "true" : "false"));
+    
+    if (endResult) {
+      Serial.println("=== UPDATE SUCCESS ===");
+      Serial.println("Firmware committed successfully!");
+      Serial.println("Final size written: " + String(Update.size()));
+      Serial.println("Free sketch space after update: " + String(ESP.getFreeSketchSpace()));
+      
+      isUpdating = false;  // Mark as complete
+      updateComplete = true;  // Set flag for POST handler
+      
+      // Show completion message
       tft.fillScreen(ST77XX_BLACK);
       tft.setTextColor(ST77XX_GREEN);
       tft.setTextSize(2);
@@ -934,12 +1097,19 @@ void handleUpdate() {
       tft.println("Update");
       tft.setCursor(10, 70);
       tft.println("Complete!");
-      delay(2000);
-      ESP.restart();
+      tft.setTextColor(ST77XX_WHITE);
+      tft.setTextSize(1);
+      tft.setCursor(10, 95);
+      tft.println("Restarting...");
     } else {
       Update.printError(Serial);
-      server.send(500, "text/plain", "Update failed");
+      Serial.println("=== UPDATE FAILED ===");
+      Serial.println("Update.end() FAILED - firmware NOT committed!");
+      Serial.print("Error code: ");
+      Serial.println(Update.getError());
+      
       isUpdating = false;
+      updateComplete = false;
       
       tft.fillScreen(ST77XX_BLACK);
       tft.setTextColor(ST77XX_RED);
@@ -948,8 +1118,22 @@ void handleUpdate() {
       tft.println("Update");
       tft.setCursor(10, 70);
       tft.println("Failed!");
-      delay(2000);
+      tft.setTextSize(1);
+      tft.setCursor(10, 95);
+      tft.println("Check serial");
     }
+  } else if (upload.status == UPLOAD_FILE_ABORTED) {
+    Serial.println("Update aborted");
+    Update.abort();
+    isUpdating = false;
+    
+    tft.fillScreen(ST77XX_BLACK);
+    tft.setTextColor(ST77XX_RED);
+    tft.setTextSize(2);
+    tft.setCursor(10, 50);
+    tft.println("Update");
+    tft.setCursor(10, 70);
+    tft.println("Aborted!");
   }
 }
 

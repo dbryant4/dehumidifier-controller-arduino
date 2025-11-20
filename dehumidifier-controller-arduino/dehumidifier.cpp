@@ -14,9 +14,13 @@ extern float targetHumidity;
 extern float currentHumidity;
 extern uint8_t floatSwitchPin;
 extern uint8_t compressorRelayPin;
+extern bool floatSwitchInverted;
 
 void checkFloatSwitch() {
-  bool newState = (digitalRead(floatSwitchPin) == LOW);
+  bool pinState = digitalRead(floatSwitchPin);
+  // If inverted, tank is full when pin is HIGH, otherwise when LOW
+  bool newState = floatSwitchInverted ? (pinState == HIGH) : (pinState == LOW);
+  
   if (newState != floatSwitchTriggered) {
     floatSwitchTriggered = newState;
     Serial.println(floatSwitchTriggered ? "DRAIN FULL!" : "Drain OK");
