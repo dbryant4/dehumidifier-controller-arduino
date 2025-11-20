@@ -21,6 +21,9 @@ extern float currentHumidity;
 extern float currentTemperature;
 extern float targetHumidity;
 
+// Helper function declaration (defined in main .ino file)
+extern String getVersionString();
+
 void initDisplay() {
   pinMode(TFT_BACKLITE, OUTPUT);
   digitalWrite(TFT_BACKLITE, HIGH);
@@ -338,6 +341,15 @@ void updateStatusBar() {
       tft.setCursor(segmentWidth * 2 + 5, 13);
       tft.print("OFF");
     }
+    
+    // Always display version below WiFi segment
+    String versionStr = "v" + getVersionString();
+    tft.fillRect(segmentWidth * 2, 20, segmentWidth, 12, ST77XX_BLACK);
+    tft.setFont(&FreeMonoBold9pt7b);
+    tft.setTextSize(1);
+    tft.setTextColor(0x4208);  // Dark gray color
+    tft.setCursor(segmentWidth * 2 + 5, 28);
+    tft.print(versionStr);
     
     prevWifiConnected = wifiConnected;
     prevDehumidifierRunning = dehumidifierRunning;
