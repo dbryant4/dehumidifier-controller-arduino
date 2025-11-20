@@ -47,6 +47,10 @@ build/
 Debug/
 Release/
 
+# Release binaries (keep versioned binaries for GitHub releases)
+releases/*.bin
+!releases/.gitkeep
+
 # Dependencies
 .pio/
 .vscode/

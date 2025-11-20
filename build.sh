@@ -4,13 +4,52 @@
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
 SKETCH_NAME="dehumidifier-controller-arduino"
 BOARD="esp32:esp32:adafruit_feather_esp32s2_tft"  # Updated to match working script
 BUILD_DIR="build"
+RELEASE_DIR="releases"
+
+# Show help if requested
+if [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
+    echo "Usage: $0 [version]"
+    echo ""
+    echo "Build firmware for dehumidifier controller"
+    echo ""
+    echo "Arguments:"
+    echo "  version    Optional version number (e.g., 1.0.0)"
+    echo "             If not provided, reads from VERSION file"
+    echo ""
+    echo "Output:"
+    echo "  - dehumidifier-controller-arduino.ino.bin (project root, for OTA)"
+    echo "  - releases/dehumidifier-controller-arduino-v{VERSION}.bin (for GitHub releases)"
+    echo ""
+    echo "Examples:"
+    echo "  $0              # Build using version from VERSION file"
+    echo "  $0 1.0.0        # Build version 1.0.0"
+    exit 0
+fi
+
+# Get version from VERSION file or command line argument
+if [ -n "$1" ]; then
+    VERSION="$1"
+else
+    if [ -f "VERSION" ]; then
+        VERSION=$(cat VERSION | tr -d ' \n')
+    else
+        VERSION="unknown"
+        echo -e "${RED}Warning: VERSION file not found and no version specified${NC}"
+        echo "Usage: $0 [version] or create a VERSION file"
+        exit 1
+    fi
+fi
+
+# Create versioned binary filename
 BIN_FILE="${SKETCH_NAME}.ino.bin"
+VERSIONED_BIN_FILE="${SKETCH_NAME}-v${VERSION}.bin"
 
 # Function to detect serial port
 detect_port() {
@@ -35,7 +74,7 @@ detect_port() {
     return 1
 }
 
-echo -e "${YELLOW}Building ${SKETCH_NAME} for ESP32-S2...${NC}"
+echo -e "${YELLOW}Building ${SKETCH_NAME} v${VERSION} for ESP32-S2...${NC}"
 
 # Check if arduino-cli is installed
 if ! command -v arduino-cli &> /dev/null; then
@@ -73,14 +112,30 @@ arduino-cli compile --fqbn ${BOARD} --output-dir ${BUILD_DIR} ${SKETCH_NAME}
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}Compilation successful!${NC}"
     
-    # Copy the binary to the current directory
+    # Create releases directory if it doesn't exist
+    mkdir -p ${RELEASE_DIR}
+    
+    # Copy the binary to current directory (for OTA uploads)
     cp "${BUILD_DIR}/${BIN_FILE}" .
     echo -e "${GREEN}Binary file created: ${BIN_FILE}${NC}"
-    echo -e "${YELLOW}You can now upload this file through the web interface${NC}"
+    
+    # Copy versioned binary to releases directory (for GitHub releases)
+    cp "${BUILD_DIR}/${BIN_FILE}" "${RELEASE_DIR}/${VERSIONED_BIN_FILE}"
+    echo -e "${GREEN}Versioned binary created: ${RELEASE_DIR}/${VERSIONED_BIN_FILE}${NC}"
     
     # Show file size
     FILESIZE=$(stat -f%z "${BIN_FILE}")
-    echo -e "File size: ${FILESIZE} bytes"
+    echo -e "${BLUE}File size: ${FILESIZE} bytes${NC}"
+    
+    # Show release information
+    echo ""
+    echo -e "${BLUE}Release Information:${NC}"
+    echo -e "  Version: ${GREEN}${VERSION}${NC}"
+    echo -e "  Binary: ${GREEN}${RELEASE_DIR}/${VERSIONED_BIN_FILE}${NC}"
+    echo -e "  Size: ${GREEN}${FILESIZE} bytes${NC}"
+    echo ""
+    echo -e "${YELLOW}You can now upload ${BIN_FILE} through the web interface${NC}"
+    echo -e "${YELLOW}Or use ${RELEASE_DIR}/${VERSIONED_BIN_FILE} for GitHub releases${NC}"
 else
     echo -e "${RED}Compilation failed!${NC}"
     exit 1

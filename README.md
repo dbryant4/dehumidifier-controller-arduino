@@ -4,6 +4,8 @@ This project uses an Adafruit ESP32-S2 TFT Feather and either a Sensirion SHT40 
 
 > **📋 Documentation**: For detailed requirements and specifications, see the [Product Requirements Document](.cursor/rules/prd.mdc). This README and the PRD are kept synchronized - both must be updated when making code changes.
 
+> **🔢 Versioning**: This project uses semantic versioning. See [VERSIONING.md](VERSIONING.md) for version management instructions. Use `./version.sh` to manage versions.
+
 ## Hardware Requirements
 
 - Adafruit ESP32-S2 TFT Feather (https://www.adafruit.com/product/5300)
@@ -213,6 +215,24 @@ The web interface allows you to:
 - Check drain status
 - Set target humidity (30-70% in 5% steps)
 - Update firmware over-the-air
+
+### Building Releases
+
+To build a versioned release binary for GitHub releases:
+
+```bash
+# Build using version from VERSION file
+./build.sh
+
+# Or specify version explicitly
+./build.sh 1.0.0
+```
+
+This creates:
+- `dehumidifier-controller-arduino.ino.bin` - For OTA uploads (in project root)
+- `releases/dehumidifier-controller-arduino-v{VERSION}.bin` - For GitHub releases
+
+See [RELEASES.md](RELEASES.md) for detailed release workflow.
 
 ### OTA Updates
 
