@@ -1,3 +1,5 @@
+** This repo is deprecated in favor of using ESPHome **
+
 # Dehumidifier Controller
 
 This project uses an Adafruit ESP32-S2 TFT Feather and either a Sensirion SHT40 or SHTC3 temperature/humidity sensor to control a dehumidifier with a broken control board. The system provides a user interface through a TFT display and web interface, allowing remote monitoring and control.
